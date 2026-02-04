@@ -1,0 +1,8 @@
+# Direction
+Focus: Freight Rail lines
+  - Predictions on where might be served & when based on current maps and expenditures
+  - Time series % Graph theory -> How congestion propegates
+  - Resilience of networks and what are critical nodes 
+
+## TODO
+[] Abstract and Titile - FE
