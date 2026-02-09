@@ -2,7 +2,13 @@
 Focus: Freight Rail lines
   - Predictions on where might be served & when based on current maps and expenditures
   - Time series % Graph theory -> How congestion propegates
+        - What kinds of failure events are becoming more common? -> Cox's Hazard Modelling (Model & Graph failures) -> Categorical Data Analysis -> in GLMNet Package
+  - Spacial modelling, change of networks overtime
   - Resilience of networks and what are critical nodes 
+  - Map of freight lines + find critical points of failure in that network
+
+One line through time -> What can we track about it?
+  - Frequency Analysis
 
 ## TODO
-[] Abstract and Titile - FE
+[] Abstract and Titile - Feb 11
