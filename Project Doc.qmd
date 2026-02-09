@@ -1,0 +1,23 @@
+---
+title: "Setup Doc"
+format: pdf
+editor: visual
+---
+
+## Quarto
+
+Megan Dsouza, James Hope-Meek, Sakina Lord
+
+Please submit your short descriptions and group member write-ups here.  As an outline, please consider these points
+
+1.  Provide a short informative title (this can be changed later).
+
+2.  Provide 1-2 sentences regarding the Data, Sources, and Project Idea (a short paragraph of your current ideas)
+
+    Predicting disruptive events within the BNSF freight rail line network using thresholds based on labor, weather, and node data. We are seeking to answer what thresholds of temperature, storm intensity, and labor availability pose a marked risk for different parts of the route as well as which nodes are most vulnerable to failure.
+
+    At this time, we forsee the large volume of data to be the largest issue
+
+3.  Do you foresee any problems with your project at this time?
+
+4.  What are the goals and outcomes you are currently considering?
