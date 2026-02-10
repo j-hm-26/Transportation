@@ -16,7 +16,7 @@ Please submit your short descriptions and group member write-ups here.  As an o
 
     Predicting disruptive events within the BNSF freight rail line network using thresholds based on labor, weather, and node data. We are seeking to answer what thresholds of temperature, storm intensity, and labor availability pose a marked risk for different parts of the route as well as which nodes are most vulnerable to failure.
 
-    At this time, we forsee the large volume of data to be the largest issue
+    At this time, we foresee the large volume of data to be the largest issue
 
 3.  Do you foresee any problems with your project at this time?
 
