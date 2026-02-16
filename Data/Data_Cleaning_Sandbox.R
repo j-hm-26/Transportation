@@ -2,6 +2,7 @@
 library(dplyr)
 library(tidyverse)
 library(readxl)
+library(arrow)
 
 # pull in data
 
@@ -31,5 +32,9 @@ colnames(raw_weekly)[7:ncol(raw_weekly)] <- as.Date(
 weekly_BNSF <- raw_weekly %>% rename(Railroad = `Railroad/\r\nRegion`) %>%
   filter(Railroad == "BNSF")
 
-
 # Creating data frames for each measure
+
+##########################################################################################
+# Peeking at Waybill data
+##########################################################################################
+waybill_2023 <- read_parquet("./cleaned_waybill_data/waybill_data_2023.parquet")
