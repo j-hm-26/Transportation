@@ -1,11 +1,5 @@
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
-from pathlib import Path
-import logging
-import re
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 #----------Scrape------------------------
 def scrape_rail_service_data():

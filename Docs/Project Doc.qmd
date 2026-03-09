@@ -1,0 +1,27 @@
+---
+title: "Setup Doc"
+format: pdf
+editor: visual
+---
+
+## Identifying critical points of failure and delay within a BNSF rail line
+
+*Megan Dsouza, James Hope-Meek, Sakina Lord*
+
+Please submit your short descriptions and group member write-ups here.  As an outline, please consider these points
+
+1.  Provide a short informative title (this can be changed later).
+
+    In the title of this submission
+
+2.  Provide 1-2 sentences regarding the Data, Sources, and Project Idea (a short paragraph of your current ideas)
+
+    We are aiming to predicting disruptive events within the BNSF freight rail line network using thresholds based on labor, weather, and node data. We are seeking to answer what thresholds of temperature, storm intensity, and labor availability pose a marked risk for different parts of the route as well as which nodes are most vulnerable to failure or to congestion.
+
+3.  Do you foresee any problems with your project at this time?
+
+    At this time, we foresee the large volume of data to be the largest issue. We also might need fuel availability data, rail depot information on labor, and travel time at and between nodes. Since we are looking at how long, on average, it takes trains to go from one node to another and how individual times might deviate from this average, getting access to data on our response variable may be difficult.
+
+4.  What are the goals and outcomes you are currently considering?
+
+    Ideally, we would create a model of how delays propagate through the rail system in order to identify critical nodes and important predictor thresholds.
