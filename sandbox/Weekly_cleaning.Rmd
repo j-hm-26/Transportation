@@ -1,0 +1,139 @@
+---
+title: "Weekly Cargo Cleaning"
+author: "Sakina Lord"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("~/Desktop/478C_Capstone/CAPPY/Data"))
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(stringr)
+```
+
+# load data
+```{r}
+# Grab all weekly fies from directory
+files <- list.files(path = "./Rail_Service_Data/", pattern = "\\.xlsx$")
+
+# initialize an empty file for them all to read into
+weekly_cargo_data <- tibble()
+
+for  (i in 1:length(files)){
+  print(i)
+  filename = paste("./Rail_Service_Data/" , files[i], sep = '')
+  print(filename)
+  if(str_detect(filename, "%")){
+      company <- str_extract(filename, "[A-Z]{2,}")
+      
+      if(company != "UP"){
+  
+        week <- str_extract(filename, "\\d{4}_\\d{2}_\\d{2}") %>%
+          str_replace_all("_", "-") %>% as.Date("%Y-%m-%d")
+        
+        print.Date(week, format = "%Y-%m-%d")
+        year <- as.numeric(format(week, "%Y"))
+        
+        print(paste(c("reading", week, company), sep = " "))
+  
+        if (company == "CN" && (week != as.Date("2025-09-03", format = "%Y-%m-%d"))) {
+          range <- "B9:E31"}
+        else{
+          if(company == "NS" && (week == as.Date("2021-06-30")))
+            {
+            range <- "B14:E36"
+            }
+          else {range <- "B8:E30"}
+        }
+          
+      # Read based on file range
+          temp <- read_xlsx(filename,
+                          sheet = 5,
+                          range = range)
+        print(head(temp))
+  
+        temp <- temp %>% mutate(Year = year,
+                                Week = week,
+                                Company = company)
+        weekly_cargo_data <- rbind(temp, weekly_cargo_data)
+      }
+  }
+  else {print("File not of correct format, skipping")}
+}
+
+```
+
+
+UP has a different file format, so rbind a bit differently
+```{r}
+# Grab all file names with UP
+UP_files <- list.files(path = "./Rail_Service_Data/", pattern = "^UP%20Data%.*\\.xlsx$")
+
+range <- "B7:D31"
+
+`Commodity Group Code` <- c("T","A", "B", "C",
+  "U", "D", "E", "F",
+  "H", "G", "I", "J",
+  "K", "L", "M", "N",
+  "O", "P", "Q", "R", 
+  "TOTAL CARLOADS", "V", 
+  "S", "TOTAL INTERMODAL")
+
+for (i in 1:length(UP_files)){
+  filename = paste("./Rail_Service_Data/" , UP_files[i], sep = '')
+  print(filename)
+  print(i)
+  if(str_detect(filename, "%")){
+      company <- "UP"
+
+      week <- str_extract(filename, "\\d{4}_\\d{2}_\\d{2}") %>%
+        str_replace_all("_", "-") %>% as.Date("%Y-%m-%d")
+      
+      print.Date(week, format = "%Y-%m-%d")
+      year <- as.numeric(format(week, "%Y"))
+      
+      print(paste(c("reading", week, company), sep = " "))
+      
+      temp <- read_xlsx(filename,
+                              sheet = 6,
+                              range = range)
+      if(!('Cars Originated' %in% names(temp))){
+        # Re-read in temp
+        temp <- read_xlsx(filename,
+                              sheet = 5,
+                              range = "B8:E30")
+      }
+      else{
+        temp <- temp %>% 
+        rename(Originated = `Cars Originated`,
+               Received = `Cars Interchanged`,
+               `Commodity Group` = Commodity) %>%
+        cbind(`Commodity Group Code`) %>% select(`Commodity Group`, `Commodity Group Code`, everything())
+      }
+      temp <- temp %>% mutate(Year = year,
+               Week = week,
+               Company = company)
+      
+      print(head(temp))
+      weekly_cargo_data <- rbind(temp, weekly_cargo_data)
+  }
+  else {print("File not of correct format, skipping")}
+}
+
+
+
+```
+
+
+
+```{r}
+# Export
+write.csv(weekly_cargo_data, file = "Weekly_Cargo_Data_2020_2026_all_data.csv")
+
+```
+
+
+
+
