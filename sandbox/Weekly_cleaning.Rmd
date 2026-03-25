@@ -69,17 +69,13 @@ for  (i in 1:length(files)){
 UP has a different file format, so rbind a bit differently
 ```{r}
 # Grab all file names with UP
+getwd()
 UP_files <- list.files(path = "./Rail_Service_Data/", pattern = "^UP%20Data%.*\\.xlsx$")
+commodity_groups <- read.csv("~/Desktop/478C_Capstone/CAPPY/Data/commodity_groups.csv")
 
 range <- "B7:D31"
 
-`Commodity Group Code` <- c("T","A", "B", "C",
-  "U", "D", "E", "F",
-  "H", "G", "I", "J",
-  "K", "L", "M", "N",
-  "O", "P", "Q", "R", 
-  "TOTAL CARLOADS", "V", 
-  "S", "TOTAL INTERMODAL")
+#weekly_cargo_data_TEMP <- tibble()
 
 for (i in 1:length(UP_files)){
   filename = paste("./Rail_Service_Data/" , UP_files[i], sep = '')
@@ -99,24 +95,33 @@ for (i in 1:length(UP_files)){
       temp <- read_xlsx(filename,
                               sheet = 6,
                               range = range)
+
+      
       if(!('Cars Originated' %in% names(temp))){
         # Re-read in temp
         temp <- read_xlsx(filename,
                               sheet = 5,
                               range = "B8:E30")
+        print("NORMAL FILE FORMAT")
       }
       else{
-        temp <- temp %>% 
+        print("SPECIAL FILE FORMAT")
+        temp <- temp %>% mutate(Commodity = str_to_lower(Commodity))
+        temp <- left_join(temp, commodity_groups, 
+                  by = c("Commodity" = "Original_Name")) %>%
         rename(Originated = `Cars Originated`,
                Received = `Cars Interchanged`,
-               `Commodity Group` = Commodity) %>%
-        cbind(`Commodity Group Code`) %>% select(`Commodity Group`, `Commodity Group Code`, everything())
+               `Commodity Group` = Standard_Name,
+               `Commodity Group Code` = Code) %>%
+          select(`Commodity Group`, `Commodity Group Code`,
+                 Originated, Received)
       }
       temp <- temp %>% mutate(Year = year,
                Week = week,
                Company = company)
       
       print(head(temp))
+      print(paste(c("Ncol: ", ncol(temp))))
       weekly_cargo_data <- rbind(temp, weekly_cargo_data)
   }
   else {print("File not of correct format, skipping")}
@@ -125,14 +130,95 @@ for (i in 1:length(UP_files)){
 
 
 ```
+```{r}
+# Grab all file names with UP
+UP_files <- list.files(path = "./Rail_Service_Data/", pattern = "^UP%20Data%.*\\.xlsx$")
+commodity_groups <- read.csv("~/Desktop/478C_Capstone/CAPPY/Data/commodity_groups.csv")
+i = 1
+range <- "B7:D31"
 
+weekly_cargo_data_TEMP <- tibble()
+
+  filename = paste("./Rail_Service_Data/" , UP_files[i], sep = '')
+  print(filename)
+  print(i)
+  if(str_detect(filename, "%")){
+      company <- "UP"
+
+      week <- str_extract(filename, "\\d{4}_\\d{2}_\\d{2}") %>%
+        str_replace_all("_", "-") %>% as.Date("%Y-%m-%d")
+      
+      print.Date(week, format = "%Y-%m-%d")
+      year <- as.numeric(format(week, "%Y"))
+      
+      print(paste(c("reading", week, company), sep = " "))
+      
+      temp <- read_xlsx(filename,
+                              sheet = 6,
+                              range = range)
+
+      
+      if(!('Cars Originated' %in% names(temp))){
+        # Re-read in temp
+        temp <- read_xlsx(filename,
+                              sheet = 5,
+                              range = "B8:E30")
+      }
+      else{
+        print("In else loop")
+        print(head(temp))
+        print(head())
+        temp <- left_join(temp, commodity_groups, 
+                  by = c("Commodity" = "Original_Name")) %>%
+        rename(Originated = `Cars Originated`,
+               Received = `Cars Interchanged`,
+               `Commodity Group` = Commodity) %>%
+          select(-Standard_Name)
+      }
+      temp <- temp %>% mutate(Year = year,
+               Week = week,
+               Company = company)
+      
+      print(head(temp))
+      print(paste(c("Ncol: ", ncol(temp))))
+      weekly_cargo_data_TEMP <- rbind(temp, weekly_cargo_data_TEMP) }
+```
+
+
+```{r}
+weekly_cargo_data_joined <- weekly_cargo_data %>% mutate(`Commodity Group` = str_to_title(`Commodity Group`)) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "And", "&")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "Prods", "Products")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Motor Vehicles & Equip$", "Motor Vehicles & Equipment")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Crushed Stone$", "Crushed Stone, Sand & Gravel")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Farm Products Except Grain$", "Farm Products")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Metals$", "Metal Products")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Non Metallic Minerals$", "Nonmetallic Minerals")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Pulp, Paper & Allied Products$", "Pulp & Paper Products")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Stone, Clay & Glass Products", "Stone, Clay, Glass")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Waste & Scrap Materials$", "Waste & Other Scrap")) %>%
+  mutate(`Commodity Group` = str_replace_all(`Commodity Group`, "^Other Carloads$", "All Other")) %>%
+  mutate(`Commodity Group` = as.factor(`Commodity Group`), 
+         `Commodity Group Code` = as.factor(`Commodity Group Code`), 
+         Originated = as.numeric(Originated), 
+         Received = as.numeric(Received), 
+         Year = as.numeric(Year), 
+         Company = as.factor(Company))
+
+# combos <- weekly_cargo_data_joined %>% mutate(combos = paste(`Commodity Group Code`, `Commodity Group`, sep = "-")) 
+# sort(unique(combos$`Commodity Group`))
+# sort(unique(combos$combos))
+```
 
 
 ```{r}
 # Export
-write.csv(weekly_cargo_data, file = "Weekly_Cargo_Data_2020_2026_all_data.csv")
-
+dir.create("cleaned_weekly_data")
+write.csv(weekly_cargo_data_joined, file = "cleaned_weekly_data/Weekly_Cargo_Data_2020_2026_all_data.csv")
+saveRDS(weekly_cargo_data_joined, "cleaned_weekly_data/weekly_cargo_data.rds")
 ```
+
+
 
 
 
