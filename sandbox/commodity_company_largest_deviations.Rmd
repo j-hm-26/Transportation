@@ -1,0 +1,278 @@
+```{r}
+# libraries
+library(tidyverse)
+library(scales)
+```
+
+```{r}
+rail_data <- read_csv("./Data/Weekly_Cargo_Data_2020_2026_noUP.csv")
+```
+Make data columns numeric
+```{r}
+# transfomr data to numerical
+rail_data$Originated <- as.numeric(rail_data$Originated)
+rail_data$Received<- as.numeric(rail_data$Received)
+```
+
+Drop Empty containers and trailers
+```{r}
+# drop empty containers and trailers from data
+rail_data <- rail_data %>%
+  filter(!(`Commodity Group Code` %in% c("U", "V")))
+```
+
+
+Create Normalized Commodity numbers
+```{r}
+# We group by the columns that define your "n" rows (e.g., Railroad and Week)
+rail_data <- rail_data %>%
+  group_by(Company, Week) %>% 
+  mutate(
+    # This creates a column with the total carloads for that specific RR/Week
+    Weekly_Total = sum(Originated, na.rm = TRUE),
+    
+    # This calculates the proportion for every row relative to that total
+    Originated_Norm = Originated / Weekly_Total
+  ) %>%
+  ungroup() # Always ungroup after you're done to avoid logic errors later
+
+# We group by the columns that define your "n" rows (e.g., Railroad and Week)
+rail_data <- rail_data %>%
+  group_by(Company, Week) %>% 
+  mutate(
+    # This creates a column with the total carloads for that specific RR/Week
+    Weekly_Total = sum(Received, na.rm = TRUE),
+    
+    # This calculates the proportion for every row relative to that total
+    Received_Norm = Received / Weekly_Total
+  ) %>%
+  ungroup()
+```
+
+
+** KEEP EVAL = FALSE IF YOU DONT WANT 100+ RAW COMMODITY OVER TIME GRAPHS **
+lowkey still helpful though
+
+Initial weekly graphs of each Cmmodity Code for each Company
+```{r, eval = FALSE}
+# 1. Get every unique combination of Railroad and Commodity
+report_list <- rail_data %>% 
+  distinct(Company, `Commodity Group Code`)
+
+# 2. Loop through the list to print individual plots
+for(i in 1:nrow(report_list)) {
+  
+  # Identify current Railroad and Commodity
+  current_rr <- report_list$Company[i]
+  current_comm <- report_list$`Commodity Group Code`[i]
+  
+  # Filter data for just this specific pairing
+  plot_data <- rail_data %>%
+    filter(Company == current_rr, `Commodity Group Code` == current_comm)
+  
+  # Create the individual plot
+  p <- ggplot(plot_data, aes(x = Week, y = Originated_Norm)) +
+    geom_line(color = "steelblue", linewidth = 1) +
+    geom_area(fill = "steelblue", alpha = 0.2) +
+    theme_minimal(base_size = 12) + 
+    labs(
+      title = paste("Carrier:", current_rr),
+      subtitle = paste("Commodity:", current_comm),
+      x = "Date",
+      y = "Weekly Originated Volume"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+
+  # 3. Print the plot to the active graphics device (Plots pane)
+  print(p)
+}
+```
+
+
+
+```{r}
+# get industry wide weekly averages
+
+industry_averages <- rail_data %>%
+  # 1. Get the total industry volume for EACH week (to use as denominator)
+  group_by(Week) %>%
+  mutate(Total_Industry_Cars_This_Week = sum(Originated, na.rm = TRUE)) %>%
+  
+  # 2. Get the total for EACH commodity across all railroads per week
+  group_by(`Commodity Group Code`, Week) %>%
+  summarise(
+    Weekly_Comm_Sum = sum(Originated, na.rm = TRUE),
+    # This is the TRUE proportion of the industry that week
+    Industry_Prop_This_Week = Weekly_Comm_Sum / max(Total_Industry_Cars_This_Week),
+    .groups = "drop"
+  ) %>%
+  
+  # 3. Average those weekly industry proportions over the whole time period
+  group_by(`Commodity Group Code`) %>%
+  summarise(
+    Final_Avg_Proportion = mean(Industry_Prop_This_Week, na.rm = TRUE)
+  )
+```
+
+# Get industry wide weekly average proportions for each commodity 
+```{r}
+# 1. Extract Industry-Wide Proportion for every week
+industry_weekly <- rail_data %>%
+  group_by(Week) %>%
+  mutate(Total_Industry_Vol = sum(Originated, na.rm = TRUE)) %>%
+  group_by(`Commodity Group Code`, Week) %>%
+  summarise(
+    Industry_Prop = sum(Originated, na.rm = TRUE) / max(Total_Industry_Vol),
+    .groups = "drop"
+  )
+```
+
+
+# Join averages to dataframe
+```{r}
+# 2. Join this benchmark back to your main data
+rail_data <- rail_data %>%
+  # Calculate the individual company's proportion first
+  group_by(Company, Week) %>%
+  mutate(Company_Prop = Originated / sum(Originated, na.rm = TRUE)) %>%
+  ungroup() %>%
+  # Merge the industry benchmark in
+  left_join(industry_weekly, by = c("Commodity Group Code", "Week")) %>%
+  # Calculate the Difference (Delta)
+  mutate(Prop_Diff = Company_Prop - Industry_Prop)
+```
+
+
+```{r}
+# 3. Create the Visualization Loop
+# We will iterate through each Railroad/Commodity to see the "Delta"
+report_list <- rail_data %>% distinct(Company, `Commodity Group Code`)
+
+# define set lower and upper limits
+y_limit_lower <- -0.5
+y_limit_upper <- 0.5
+
+for(i in 1:nrow(report_list)) {
+  
+  curr_rr <- report_list$Company[i]
+  curr_comm <- report_list$`Commodity Group Code`[i]
+  
+  plot_data <- rail_data %>%
+    filter(Company == curr_rr, `Commodity Group Code` == curr_comm)
+  
+  p <- ggplot(plot_data, aes(x = Week, y = Prop_Diff)) +
+    # The "Zero" line represents the Industry Average
+    geom_hline(yintercept = 0, color = "red", linetype = "dashed", linewidth = 1.2) +
+    
+    # The actual difference over time
+    geom_line(color = "midnightblue", linewidth = 1) +
+    
+    # Optional: Gradient fill to show 'Over' vs 'Under' performance
+    geom_area(aes(fill = Prop_Diff > 0), alpha = 0.2, show.legend = FALSE) +
+    scale_fill_manual(values = c("TRUE" = "green", "FALSE" = "red")) +
+    
+    theme_minimal(base_size = 12) +
+    
+    # CRITICAL: This fixes the scale so all graphs look the same
+    coord_cartesian(ylim = c(y_limit_lower, y_limit_upper)) +
+    
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+    
+    labs(
+      title = paste("Carrier Relative Performance:", curr_rr),
+      subtitle = paste("Commodity Group:", curr_comm),
+      caption = "Red Dashed Line = Industry Benchmark (0% Difference)",
+      x = "Date",
+      y = "Market Share Deviation"
+    ) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+  
+  print(p)
+}
+```
+
+
+# Filter out the most deviant Commodity-Company Pairs
+```{r}
+# 1. Calculate the "Distance from Zero" Score
+dist_from_zero_rank <- rail_data %>%
+  group_by(Company, `Commodity Group Code`) %>%
+  summarise(
+    # Mean Absolute Deviation from the 0 baseline
+    avg_distance = mean(abs(Prop_Diff), na.rm = TRUE),
+    # Max single-point spike away from 0
+    max_deviation = max(abs(Prop_Diff), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # Take the Top 10 pairs that are furthest from the industry average
+  slice_max(avg_distance, n = 8)
+
+# 2. Filter the main data for these "Distance Outliers"
+top_dist_pairs <- rail_data %>%
+  mutate(pair_id = paste(Company, `Commodity Group Code`)) %>%
+  filter(pair_id %in% paste(dist_from_zero_rank$Company, dist_from_zero_rank$`Commodity Group Code`))
+
+top_dist_pairs$pair_label <- paste(top_dist_pairs$Company,
+                                   top_dist_pairs$`Commodity Group`,
+                                   sep = ": ")
+```
+
+# Plot the top 10 largest differentials
+```{r}
+# 1. Create a custom color palette where each Railroad has a "family" of shades
+# This ensures BNSF lines are all various blues, UP are all various greens, etc.
+unique_pairs <- unique(top_dist_pairs$pair_label)
+base_colors <- c("blue", "darkorange", "darkgreen", "magenta", "firebrick")
+manual_colors <- setNames(
+    colorRampPalette(base_colors)(length(unique_pairs)),
+    unique_pairs
+  )
+
+# 2. Plotting with manual color override
+ggplot(top_dist_pairs, aes(x = Week, y = Prop_Diff, color = pair_label)) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed", linewidth = 1.5) +
+  # Opacity set to 0.6
+  geom_line(linewidth = 1, alpha = 0.6) +
+  
+  # Use the manual scale to get those distinct shades per pair
+  scale_color_manual(values = manual_colors) +
+
+    # Styling for clarity
+  coord_cartesian(ylim = c(-0.5, 0.5)) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal(base_size = 10) +
+  labs(
+    title = "Top 8 Commodity-Company Pairs Furthest from Industry Average",
+    x = "Date",
+    y = "Market Share Deviation",
+    color = "Carrier : Commodity"
+  ) +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 8, face = "bold"),
+    plot.title = element_text(face = "bold")
+  ) 
+# TODO: Volitality analysis//clean to combine commodities
+```
+
+# save image
+```{r}
+# Save the final comparison graph
+ggsave(
+  filename = "Top_10_Market_Deviations.png", 
+  plot = last_plot(),       # Captures the very last plot you generated
+  width = 12,               # Width in inches
+  height = 7,               # Height in inches
+  dpi = 300,                # High resolution for reports/presentations
+  bg = "white",              # Ensures the background isn't transparent
+  device = png
+)
+```
+

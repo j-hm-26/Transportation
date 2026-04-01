@@ -5,3 +5,5 @@
 *.xlsx
 *.parquet
 *.csv
+*.zip
+*.html
