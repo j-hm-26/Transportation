@@ -90,7 +90,7 @@ GRID_COLOR = "#E2E8F0"
 ACCENT     = "#6C63FF"
 
 OUTPUT_DIR = "/home/lord/Desktop/478C_Capstone/CAPPY/Visuals/Importance_Analysis"
-DATA_PATH  = "/home/lord/Desktop/478C_Capstone/CAPPY/Data/Weekly_Cargo_Data_2020_2026_all_data.csv"
+DATA_PATH  = "/home/lord/Desktop/478C_Capstone/CAPPY/Data/Weekly_Cargo_Data_2023_2026_clean_april6.csv"
 
 # Commodity code → readable name
 CODE_NAMES = {
