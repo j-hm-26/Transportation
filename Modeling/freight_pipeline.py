@@ -7,7 +7,7 @@ Models: GAM (Penalized Splines), ProphetLite, SARIMALite, FixedEffectsOLS
 Validation: 5×2 Repeated Time-Series Cross-Validation
 Author: Extended pipeline with GAM integration
 """
-
+#%%
 # ══════════════════════════════════════════════════════════════════
 # SECTION 1 – IMPORTS & CONFIGURATION
 # ══════════════════════════════════════════════════════════════════
@@ -44,7 +44,7 @@ GRID_COLOR = "#E2E8F0"
 ACCENT     = "#6C63FF"
 
 OUTPUT_DIR = "Visuals/freight_pipeline"
-DATA_PATH  = "Data/Weekly_Cargo_Data_2020_2026_all_data.csv"
+DATA_PATH  = "Data/Weekly_Cargo_Data_2023_2026_clean_april6.csv"
 
 N_REPEATS   = 5
 K_FOLDS     = 2
@@ -1072,7 +1072,289 @@ def plot_scorecard(df_cv):
     plt.tight_layout()
     _save(fig, "fig15_scorecard.png")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPORT BLOCK
+# ──────────────────────────────────────────────────────────────────────────────
+# 
+# PURPOSE: exposes a single public function, `build_fitted_models()`, that
+#   external scripts can call after doing `import freight_pipeline as fp`.
+#   The function re-runs the minimal fitting logic (no CV, no plots) and
+#   returns every artefact a downstream script needs:
+#       • fitted model objects              – predict on any horizon
+#       • in-sample fitted value arrays     – residual / diagnostic work
+#       • aggregate time-series DataFrame   – dates, actuals, week_num
+#       • raw panel DataFrame               – needed by OLS-FE forecaster
+#       • cross-validation results table    – if CV was already run
+# ══════════════════════════════════════════════════════════════════════════════
 
+def build_fitted_models(
+    data_path: str = DATA_PATH,
+    run_cv: bool = False,
+    n_repeats: int = N_REPEATS,
+    k_folds: int = K_FOLDS,
+    seasonal_s: int = SEASONAL_S,
+    verbose: bool = True,
+) -> dict:
+    """
+    Load the freight data and fit all four models on the full training window.
+
+    Parameters
+    ----------
+    data_path : str
+        Path to the raw CSV file (default: the module-level DATA_PATH constant).
+    run_cv : bool
+        If True, also runs the 5×2 repeated time-series CV and includes the
+        resulting DataFrame in the returned dict under key ``"df_cv"``.
+        CV adds significant runtime; set False for quick downstream use.
+    n_repeats : int
+        Number of CV repeats (only used when run_cv=True).
+    k_folds : int
+        Number of CV folds per repeat (only used when run_cv=True).
+    seasonal_s : int
+        SARIMA seasonal period in weeks (default 52).
+    verbose : bool
+        Print progress messages.
+
+    Returns
+    -------
+    dict with keys
+    ──────────────
+    "ts"            : pd.DataFrame   – aggregate weekly time-series
+    "panel"         : pd.DataFrame   – full panel data (one row per
+                                       company × commodity × week)
+    "y_all"         : np.ndarray     – aggregate carload totals (float)
+    "t_all"         : np.ndarray     – integer week index (0, 1, 2, …)
+
+    "gam_model"     : GAMSpline      – fitted on full sample
+    "prophet_model" : ProphetLite    – fitted on full sample
+    "sarima_model"  : SARIMALite     – fitted on full sample
+    "fe_model"      : FixedEffectsOLS – fitted on full sample
+
+    "y_fit_gam"     : np.ndarray     – GAM in-sample fitted values
+    "y_fit_prophet" : np.ndarray     – Prophet in-sample fitted values
+    "y_fit_sarima"  : np.ndarray     – SARIMA in-sample (≈ actual;
+                                       differenced-space residuals)
+    "y_fit_fe"      : np.ndarray     – OLS-FE in-sample fitted values
+                                       (aggregated from panel-level preds)
+
+    "df_cv"         : pd.DataFrame   – CV fold metrics (None if run_cv=False)
+    "summary_cv"    : pd.DataFrame   – multi-level summary table
+                                       (None if run_cv=False)
+    """
+
+    # ── Step 1: Load & build data structures ─────────────────────────────────
+    if verbose:
+        print("[build_fitted_models] Loading data …")
+
+    # Load raw CSV and normalise column names / types
+    raw = load_raw_data(data_path)
+
+    # Build the aggregate weekly time-series (one row per week)
+    ts = build_aggregate_timeseries(raw)
+
+    # Build the panel (one row per company × commodity × week)
+    panel = build_panel_data(raw)
+
+    # Convenience aliases used throughout the pipeline
+    y_all = ts["total"].values.astype(float)   # total carloads per week
+    t_all = ts["week_num"].values.astype(float) # 0-indexed week counter
+
+    if verbose:
+        print(f"  Weeks in sample : {len(ts)}")
+        print(f"  Panel rows      : {len(panel):,}")
+        print(f"  Date range      : {ts['week'].min().date()} → {ts['week'].max().date()}")
+
+    # ── Step 2: Fit GAM on full sample ───────────────────────────────────────
+    if verbose:
+        print("[build_fitted_models] Fitting GAM …")
+
+    # GAMSpline uses penalised cubic-spline trend + Fourier seasonality
+    gam_model = GAMSpline(n_knots_trend=15, n_fourier=12, alpha=1.0)
+    gam_model.fit(t_all, y_all)               # fits Ridge on full y_all
+
+    # Produce in-sample fitted values (same t grid as training)
+    y_fit_gam = gam_model.predict(t_all)
+
+    # ── Step 3: Fit ProphetLite on full sample ────────────────────────────────
+    if verbose:
+        print("[build_fitted_models] Fitting ProphetLite …")
+
+    # ProphetLite: piecewise-linear trend + Fourier seasonality, Ridge-estimated
+    prophet_model = ProphetLite(n_changepoints=25, n_fourier=10, alpha=0.5)
+    prophet_model.fit(t_all, y_all)
+
+    # In-sample fitted values
+    y_fit_prophet = prophet_model.predict(t_all)
+
+    # ── Step 4: Fit SARIMALite on full sample ────────────────────────────────
+    if verbose:
+        print("[build_fitted_models] Fitting SARIMALite …")
+
+    # SARIMALite: double-differenced SARIMA(2,1,2)×(1,1,1)[52] via L-BFGS-B
+    sarima_model = SARIMALite(p=2, q=2, P=1, Q=1, S=seasonal_s)
+    sarima_model.fit(y_all)
+
+    # SARIMA residuals live in the differenced space; return actuals as the
+    # "in-sample fitted" placeholder (consistent with the main pipeline)
+    y_fit_sarima = y_all.copy()
+
+    # ── Step 5: Fit FixedEffectsOLS on full panel ─────────────────────────────
+    if verbose:
+        print("[build_fitted_models] Fitting Fixed-Effects OLS …")
+
+    # Two-way FE OLS on log-carloads; operates on the panel (not aggregate)
+    fe_model = FixedEffectsOLS(n_fourier=6, fit_trend=True)
+    fe_model.fit(panel)                         # fits on panel rows
+
+    # Predict at panel level, then aggregate back to weekly totals
+    panel = panel.copy()                        # avoid mutating caller's copy
+    panel["fe_pred"] = fe_model.predict(panel)  # predicted log-scale, exp'd inside
+
+    # Sum panel-level predictions to weekly aggregate (aligns with ts index)
+    y_fit_fe = (
+        panel
+        .groupby("week")["fe_pred"]
+        .sum()
+        .reindex(ts["week"])   # enforce exact date alignment with ts
+        .values
+    )
+
+    # ── Step 6 (optional): Cross-validate all models ──────────────────────────
+    df_cv = None
+    summary_cv = None
+
+    if run_cv:
+        if verbose:
+            print("[build_fitted_models] Running 5×2 repeated CV …")
+
+        # Generate time-series CV splits (non-shuffled, forward-chaining)
+        splits = make_time_splits(
+            n=len(y_all),
+            n_repeats=n_repeats,
+            k_folds=k_folds,
+        )
+
+        # ── CV: GAM ──────────────────────────────────────────────────────────
+        def _gam_fit(tr):
+            m = GAMSpline(n_knots_trend=15, n_fourier=12, alpha=1.0)
+            m.fit(t_all[tr], y_all[tr])
+            return m
+
+        def _gam_pred(m, te):
+            return m.predict(t_all[te])
+
+        recs_gam, _ = run_cv_loop(
+            "GAM", splits, _gam_fit, _gam_pred, y_all, verbose=verbose
+        )
+
+        # ── CV: ProphetLite ───────────────────────────────────────────────────
+        def _prophet_fit(tr):
+            m = ProphetLite(n_changepoints=20, n_fourier=10, alpha=1.0)
+            m.fit(t_all[tr], y_all[tr])
+            return m
+
+        def _prophet_pred(m, te):
+            return m.predict(t_all[te])
+
+        recs_prophet, _ = run_cv_loop(
+            "Prophet", splits, _prophet_fit, _prophet_pred, y_all, verbose=verbose
+        )
+
+        # ── CV: SARIMALite ────────────────────────────────────────────────────
+        def _sarima_fit(tr):
+            m = SARIMALite(p=2, q=2, P=1, Q=1, S=seasonal_s)
+            m.fit(y_all[tr])
+            return m
+
+        def _sarima_pred(m, te):
+            return m.predict(h=len(te))
+
+        recs_sarima, _ = run_cv_loop(
+            "SARIMA", splits, _sarima_fit, _sarima_pred, y_all, verbose=verbose
+        )
+
+        # ── CV: OLS Fixed-Effects (panel-level, aggregated) ───────────────────
+        fe_records = []
+        week_sorted = sorted(panel["week"].unique())   # ordered list of unique weeks
+
+        for sp in splits:
+            fold = sp["fold"]
+            # Map integer fold indices → actual week timestamps
+            tr_weeks = [week_sorted[i] for i in sp["train_idx"] if i < len(week_sorted)]
+            te_weeks = [week_sorted[i] for i in sp["test_idx"]  if i < len(week_sorted)]
+            if not tr_weeks or not te_weeks:
+                continue  # skip degenerate folds
+            tr_panel = panel[panel["week"].isin(tr_weeks)].copy()
+            te_panel = panel[panel["week"].isin(te_weeks)].copy()
+            try:
+                fe_cv = FixedEffectsOLS(n_fourier=6, fit_trend=True)
+                fe_cv.fit(tr_panel)
+                te_panel = te_panel.copy()
+                te_panel["pred"] = fe_cv.predict(te_panel)
+                # Aggregate predicted & actual carloads to weekly totals
+                pred_agg = (
+                    te_panel.groupby("week")["pred"].sum().reindex(te_weeks).values
+                )
+                true_agg = (
+                    panel[panel["week"].isin(te_weeks)]
+                    .groupby("week")["total"]
+                    .sum()
+                    .reindex(te_weeks)
+                    .values
+                )
+                pred_agg = np.clip(pred_agg, 0, None)
+                m = compute_metrics(true_agg, pred_agg, "OLS-FE")
+                m["fold"] = fold
+                fe_records.append(m)
+                if verbose:
+                    print(
+                        f"  [OLS-FE] fold {fold:2d} | "
+                        f"RMSE={m['RMSE']:>10,.0f} | MAPE={m['MAPE']:.2f}%"
+                    )
+            except Exception as exc:
+                if verbose:
+                    print(f"  [OLS-FE] fold {fold} FAILED: {exc}")
+
+        # Combine all CV records into one long DataFrame
+        df_cv = pd.concat(
+            [
+                pd.DataFrame(recs_gam),
+                pd.DataFrame(recs_prophet),
+                pd.DataFrame(recs_sarima),
+                pd.DataFrame(fe_records),
+            ],
+            ignore_index=True,
+        )
+        # Multi-level summary (mean ± std per model per metric)
+        summary_cv = summarise_cv(df_cv)
+
+    # ── Step 7: Package and return everything ─────────────────────────────────
+    if verbose:
+        print("[build_fitted_models] Done. Returning artefact dict.")
+
+    return {
+        # ── Raw data ──────────────────────────────────────────────────────────
+        "ts":             ts,           # aggregate weekly DataFrame
+        "panel":          panel,        # panel DataFrame (with fe_pred column added)
+        "y_all":          y_all,        # 1-D array of weekly totals
+        "t_all":          t_all,        # 1-D array of week indices (0, 1, 2, …)
+
+        # ── Fitted model objects ──────────────────────────────────────────────
+        "gam_model":      gam_model,    # GAMSpline instance (call .predict(t))
+        "prophet_model":  prophet_model,# ProphetLite instance (call .predict(t))
+        "sarima_model":   sarima_model, # SARIMALite instance (call .predict(h=n))
+        "fe_model":       fe_model,     # FixedEffectsOLS instance (call .predict(panel))
+
+        # ── In-sample fitted value arrays (same length as ts / y_all) ─────────
+        "y_fit_gam":      y_fit_gam,
+        "y_fit_prophet":  y_fit_prophet,
+        "y_fit_sarima":   y_fit_sarima, # placeholder — SARIMA residuals are differenced
+        "y_fit_fe":       y_fit_fe,
+
+        # ── CV results (None unless run_cv=True) ──────────────────────────────
+        "df_cv":          df_cv,
+        "summary_cv":     summary_cv,
+    }
 # ══════════════════════════════════════════════════════════════════
 # SECTION 9 – MAIN PIPELINE
 # ══════════════════════════════════════════════════════════════════
@@ -1174,7 +1456,7 @@ if __name__ == "__main__":
     df_cv = pd.concat([pd.DataFrame(recs_gam), pd.DataFrame(recs_prophet),
                        pd.DataFrame(recs_sarima), pd.DataFrame(fe_records)],
                       ignore_index=True)
-
+#%%
     # ── 9.5  Summarise CV results ─────────────────────────────────
     print("\n[5/7] CV Summary…")
     summary_tbl = summarise_cv(df_cv)
@@ -1278,3 +1560,5 @@ if __name__ == "__main__":
     print("\n" + "=" * 65)
     print("  Pipeline complete. Outputs →", OUTPUT_DIR)
     print("=" * 65)
+
+# %%
