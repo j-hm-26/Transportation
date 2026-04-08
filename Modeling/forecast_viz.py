@@ -67,7 +67,7 @@ import seaborn as sns
 # Insert the directory containing freight_pipeline.py at the front of sys.path
 # so that `import freight_pipeline` resolves correctly regardless of CWD.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import freight_pipeline as fp   # model classes, helpers, DATA_PATH constant
+import freight_pipeline_v2 as fp   # model classes, helpers, DATA_PATH constant
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +78,7 @@ import freight_pipeline as fp   # model classes, helpers, DATA_PATH constant
 PALETTE = {
     "GAM":     "#9B59B6",
     "SARIMA":  "#E07B39",
-    "Prophet": "#3B82C4",
+#    "Prophet": "#3B82C4",
     "OLS-FE":  "#2DBD6E",
 }
 BG_COLOR   = "#F8F9FA"   # off-white figure background
@@ -86,7 +86,8 @@ GRID_COLOR = "#E2E8F0"   # light grey grid lines
 ACCENT     = "#6C63FF"   # fallback highlight colour
 
 # All valid model keys accepted by this script
-ALL_MODELS = ["GAM", "Prophet", "SARIMA", "OLS-FE"]
+#ALL_MODELS = ["GAM", "Prophet", "SARIMA", "OLS-FE"]
+ALL_MODELS = ["GAM", "SARIMA", "OLS-FE"]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
