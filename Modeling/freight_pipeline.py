@@ -43,13 +43,15 @@ BG_COLOR   = "#F8F9FA"
 GRID_COLOR = "#E2E8F0"
 ACCENT     = "#6C63FF"
 
-OUTPUT_DIR = "Visuals/freight_pipeline"
-DATA_PATH  = "Data/Weekly_Cargo_Data_2023_2026_clean_april6.csv"
+OUTPUT_DIR = "Visuals/freight_pipeline/2017_onwards"
+DATA_PATH  = "Data/Weekly_Cargo_Data_2017_2026.csv"
 
 N_REPEATS   = 5
 K_FOLDS     = 2
 FORECAST_H  = 26 # 6 months ahead (26 weeks)
 SEASONAL_S  = 52
+
+MIN_YR = 2017
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -554,7 +556,7 @@ def plot_data_overview(ts, raw):
     ax4.set_title("Annual Total Carloads"); ax4.set_xlabel("Year")
     ax4.set_ylabel("Carloads (millions)")
 
-    fig.suptitle("Freight Rail Data Overview (2020–2026)",
+    fig.suptitle(f"Freight Rail Data Overview ({MIN_YR}–2026)",
                  fontsize=15, fontweight="bold", y=1.01)
     _save(fig, "fig01_data_overview.png")
 
@@ -578,7 +580,7 @@ def plot_seasonality_patterns(ts):
     for yr, grp in ts.groupby("year"):
         ax.plot(grp["week_of_year"], grp["total"]/1e6,
                 alpha=0.7, linewidth=1.2,
-                label=str(yr), color=plt.cm.viridis((yr-2020)/6))
+                label=str(yr), color=plt.cm.viridis((yr-MIN_YR)/6))
     ax.set_title("Year-over-Year Overlay"); ax.set_xlabel("Week of Year")
     ax.set_ylabel("Carloads (millions)"); ax.legend(fontsize=8)
 

@@ -28,10 +28,7 @@ def scrape_rail_service_data():
                     f.write(file_response.content)
                 print(f"Downloaded: {file_name}")
     else:
-        print(f"Failed to retrieve the page. Status code: {response.status_code}")
-
-# -----------Format to paraquet------------------------
-            
+        print(f"Failed to retrieve the page. Status code: {response.status_code}")           
 
 #----------- Run -----------------
 if __name__ == "__main__":

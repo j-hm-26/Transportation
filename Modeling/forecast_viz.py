@@ -20,12 +20,12 @@ forecast_viz.py --start 2025-11-25 --end 2026-25-02 --export --run-cv
 
 # Full options
 python forecast_viz.py \
-    --data    "Data/Weekly_Cargo_Data_2023_2026_clean_april6.csv" \
+    --data    "Data/Weekly_Cargo_Data_2017_2026.csv" \
     --horizon 26 \
     --models  GAM Prophet SARIMA OLS-FE \
     --history 78 \
     --ci      0.07 \
-    --outdir  "Visuals/custom_forecast" \
+    --outdir  "Visuals/custom_forecast/2017_onwards" \
     --export \
     --no-show
 
@@ -163,7 +163,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--outdir",
         type=str,
-        default="Visuals/forecast_viz",
+        default="Visuals/forecast_viz/2017_onwards",
         help="Directory where PNG files and the optional CSV are written.",
     )
 
