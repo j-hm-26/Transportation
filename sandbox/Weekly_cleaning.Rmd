@@ -231,7 +231,9 @@ weekly_cargo_data_fomatted <- weekly_cargo_data %>% janitor::clean_names() %>%
          commodity_group_code = as.factor(commodity_group_code)) %>%
   select (-Code, -Standard_Name) %>%
      select(week, year, company, commodity_group, commodity_group_code, originated, received, `originated-recieved`, Total_Originated_Recieved) %>%
-   janitor::clean_names()
+   janitor::clean_names() %>% 
+  group_by(week, year, company, commodity_group, commodity_group_code) %>%
+  slice(1)
 
 
 total_carloads_prediciton_data <- weekly_cargo_data_fomatted %>%   
@@ -239,6 +241,13 @@ total_carloads_prediciton_data <- weekly_cargo_data_fomatted %>%
   summarise(Total_Carloads = sum(originated + received, na.rm = TRUE), .groups = "drop") %>%
   janitor::clean_names()
 
+```
+```{r}
+# rename for RNN
+Weekly_Cargo_Data_2017_2026 <- weekly_cargo_data_fomatted %>% rename(Week = week, 'Commodity Group' = commodity_group,
+                                                                      'Commodity Group Code' = commodity_group_code, 
+                                                                      Originated = originated, Received = received,
+                                                                      Company = company, Year = year)
 ```
 
 
@@ -248,6 +257,9 @@ min_yr <- min(weekly_cargo_data$Year)
 max_yr <- max(weekly_cargo_data$Year)
 filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, ".csv", sep = "")
 write.csv(weekly_cargo_data_fomatted, file = filename)
+
+filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, "_RNN.csv", sep = "")
+write.csv(Weekly_Cargo_Data_2017_2026, file = filename)
 
 filename <- paste("Carload_Prediction_Weekly_Cargo_Data_", min_yr,"_", max_yr, ".csv", sep = "")
 write.csv(total_carloads_prediciton_data, file = filename)
