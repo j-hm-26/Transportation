@@ -216,6 +216,7 @@ for (i in 1:length(skipped_files)){
 cargo_groups <- read.csv("commodity_groups.csv")
 
 weekly_cargo_data_fomatted <- weekly_cargo_data %>% janitor::clean_names() %>%
+     filter(!(grepl("TOTAL",commodity_group_code))) %>%
   mutate(originated = as.numeric(originated),
          received = as.numeric(received),
          `originated-recieved` = originated - received,
