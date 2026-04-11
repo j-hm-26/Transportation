@@ -37,9 +37,9 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # ── Aesthetic constants ─────────────────────────────────────────
 PALETTE = {
-    "GAM":    "#9B59B6",
+    "GAM":    "#2DBD6E",
     "SARIMA": "#E07B39",
-    "OLS-FE": "#2DBD6E",
+    "OLS-FE": "#9B59B6",
 }
 TARGET_COLORS = {
     "originated": "#3B82C4",
@@ -55,7 +55,7 @@ DATA_PATH   = "Data/Weekly_Cargo_Data_2017_2026.csv"
 
 N_REPEATS   = 5
 K_FOLDS     = 2
-FORECAST_H  = 26   # hold-out / forecast horizon (weeks)
+FORECAST_H  = 13   # hold-out / forecast horizon (weeks)
 SEASONAL_S  = 52
 TARGETS     = ["originated", "received", "total"]
 
@@ -670,9 +670,9 @@ def _save(fig, fname):
 def plot_data_overview(ts, raw):
     """Fig 01 – Data overview EDA."""
     fig = plt.figure(figsize=(20, 11))
-    gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.45, wspace=0.35)
+    gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.50, wspace=0.38)
 
-    # Top: three target time-series
+    # Top row spanning all 3 cols: three target time-series
     ax_top = fig.add_subplot(gs[0, :])
     for tgt, col in TARGET_COLORS.items():
         ax_top.plot(ts["week"], ts[tgt] / 1e6, color=col,
@@ -682,51 +682,112 @@ def plot_data_overview(ts, raw):
     ax_top.set_ylabel("Carloads (millions)"); ax_top.set_xlabel("Week")
     ax_top.legend(fontsize=10)
 
-    # Middle-left: by company
+    # Bottom-left: total carloads by company (horizontal bar, descending)
     ax2 = fig.add_subplot(gs[1, 0])
-    raw_total = raw["originated"].fillna(0) + raw["received"].fillna(0)
-    comp_tot = (raw.assign(_tot=raw_total).groupby("company")["_tot"].sum()
-                   .sort_values(ascending=True))
+    raw_copy = raw.copy()
+    raw_copy["originated"] = raw_copy["originated"].fillna(0)
+    raw_copy["received"]   = raw_copy["received"].fillna(0)
+    raw_copy["_tot"] = raw_copy["originated"] + raw_copy["received"]
+    comp_tot = (raw_copy.groupby("company")["_tot"].sum()
+                         .sort_values(ascending=True))   # ascending → largest at top of hbar
     ax2.barh(comp_tot.index, comp_tot.values / 1e6,
              color=sns.color_palette("Set2", len(comp_tot)))
     ax2.set_title("Total Carloads by Company"); ax2.set_xlabel("Carloads (millions)")
 
-    # Middle-centre: by commodity
+    # Bottom-centre: top-12 commodity groups
     ax3 = fig.add_subplot(gs[1, 1])
-    comm_tot = (raw.assign(_tot=raw_total).groupby("commodity_group")["_tot"].sum()
-                   .sort_values(ascending=True).tail(12))
+    comm_tot = (raw_copy.groupby("commodity_group")["_tot"].sum()
+                         .sort_values(ascending=True).tail(12))
     ax3.barh(comm_tot.index, comm_tot.values / 1e6,
              color=sns.color_palette("tab20", len(comm_tot)))
     ax3.set_title("Top-12 Commodity Groups by Volume")
     ax3.set_xlabel("Carloads (millions)")
 
-    # Middle-right: originated vs received share by company
+    # Bottom-right: Originated vs Received by company — descending total,
+    # CPKC bar is CPKC base + CP (striped) + KCS (dotted) stacked on top.
     ax4 = fig.add_subplot(gs[1, 2])
-    orig_tot = raw.groupby("company")["originated"].sum().fillna(0)
-    recv_tot = raw.groupby("company")["received"].sum().fillna(0)
-    companies = orig_tot.index.tolist()
-    x = np.arange(len(companies)); w = 0.38
-    ax4.bar(x - w/2, orig_tot.values / 1e6, w, label="Originated",
-            color=TARGET_COLORS["originated"], alpha=0.85)
-    ax4.bar(x + w/2, recv_tot.values / 1e6, w, label="Received",
-            color=TARGET_COLORS["received"], alpha=0.85)
-    ax4.set_xticks(x); ax4.set_xticklabels(companies, rotation=45, ha="right")
-    ax4.set_title("Originated vs Received by Company")
-    ax4.set_ylabel("Carloads (millions)"); ax4.legend(fontsize=8)
 
-    # Bottom: annual totals per target
-    ax5 = fig.add_subplot(gs[2, :])
-    ts_yr = ts.groupby("year")[["originated","received","total"]].sum() / 1e6
-    x = np.arange(len(ts_yr.index)); w = 0.27
-    ax5.bar(x - w, ts_yr["originated"], w, label="Originated",
+    # Compute originted / received per company (excluding CP & KCS for their
+    # own standalone bars — they are subsumed into CPKC stack)
+    orig_by_co = raw_copy.groupby("company")["originated"].sum().fillna(0)
+    recv_by_co = raw_copy.groupby("company")["received"].sum().fillna(0)
+    total_by_co = orig_by_co + recv_by_co
+
+    # Sort companies by descending total (largest → leftmost on a vertical bar chart)
+    companies_sorted = total_by_co.sort_values(ascending=False).index.tolist()
+
+    # CPKC pre-merger layer volumes (CP + KCS historical)
+    cp_orig   = orig_by_co.get("CP",   0)
+    cp_recv   = recv_by_co.get("CP",   0)
+    kcs_orig  = orig_by_co.get("KCS",  0)
+    kcs_recv  = recv_by_co.get("KCS",  0)
+    cpkc_orig = orig_by_co.get("CPKC", 0)
+    cpkc_recv = recv_by_co.get("CPKC", 0)
+
+    x = np.arange(len(companies_sorted))
+    w = 0.38
+
+    orig_vals = [orig_by_co.get(c, 0) / 1e6 for c in companies_sorted]
+    recv_vals = [recv_by_co.get(c, 0) / 1e6 for c in companies_sorted]
+
+    # Base originated / received bars
+    ax4.bar(x - w/2, orig_vals, w, label="Originated",
             color=TARGET_COLORS["originated"], alpha=0.85)
-    ax5.bar(x,     ts_yr["received"],   w, label="Received",
+    ax4.bar(x + w/2, recv_vals, w, label="Received",
             color=TARGET_COLORS["received"], alpha=0.85)
-    ax5.bar(x + w, ts_yr["total"],      w, label="Total",
-            color=TARGET_COLORS["total"], alpha=0.85)
-    ax5.set_xticks(x); ax5.set_xticklabels(ts_yr.index)
-    ax5.set_title("Annual Carloads by Target"); ax5.set_ylabel("Carloads (millions)")
-    ax5.legend(fontsize=9)
+
+    # CPKC stacked layers: find its x position
+    if "CPKC" in companies_sorted:
+        cpkc_idx = companies_sorted.index("CPKC")
+
+        # CP layer (striped hatching) stacked above CPKC originated bar
+        ax4.bar(cpkc_idx - w/2, cp_orig / 1e6, w,
+                bottom=cpkc_orig / 1e6,
+                color=TARGET_COLORS["originated"], alpha=0.60,
+                hatch="///", edgecolor="white", linewidth=0.6,
+                label="CP (pre-merger, orig.)")
+        # KCS layer (dotted hatching) stacked above CP on originated side
+        ax4.bar(cpkc_idx - w/2, kcs_orig / 1e6, w,
+                bottom=(cpkc_orig + cp_orig) / 1e6,
+                color=TARGET_COLORS["originated"], alpha=0.35,
+                hatch="...", edgecolor="white", linewidth=0.6,
+                label="KCS (pre-merger, orig.)")
+
+        # Same stacking on received side
+        ax4.bar(cpkc_idx + w/2, cp_recv / 1e6, w,
+                bottom=cpkc_recv / 1e6,
+                color=TARGET_COLORS["received"], alpha=0.60,
+                hatch="///", edgecolor="white", linewidth=0.6,
+                label="CP (pre-merger, recv.)")
+        ax4.bar(cpkc_idx + w/2, kcs_recv / 1e6, w,
+                bottom=(cpkc_recv + cp_recv) / 1e6,
+                color=TARGET_COLORS["received"], alpha=0.35,
+                hatch="...", edgecolor="white", linewidth=0.6,
+                label="KCS (pre-merger, recv.)")
+
+        # Annotation above the CPKC group
+        total_cpkc_stack_orig = (cpkc_orig + cp_orig + kcs_orig) / 1e6
+        total_cpkc_stack_recv = (cpkc_recv + cp_recv + kcs_recv) / 1e6
+        ax4.annotate("(CP+KCS)",
+                     xy=(cpkc_idx, max(total_cpkc_stack_orig,
+                                       total_cpkc_stack_recv)),
+                     xytext=(0, 6), textcoords="offset points",
+                     ha="center", fontsize=7, color="#333333")
+
+    ax4.set_xticks(x)
+    ax4.set_xticklabels(companies_sorted, rotation=45, ha="right")
+    ax4.set_title("Originated vs Received by Company\n(CPKC bar includes CP+KCS history)",
+                  fontsize=9)
+    ax4.set_ylabel("Carloads (millions)")
+    # Compact legend
+    handles, labels = ax4.get_legend_handles_labels()
+    # Keep only: Originated, Received, CP orig, KCS orig
+    keep = [i for i, l in enumerate(labels)
+            if l in ("Originated", "Received",
+                     "CP (pre-merger, orig.)", "KCS (pre-merger, orig.)")]
+    ax4.legend([handles[i] for i in keep],
+               ["Originated", "Received", "+ CP Pre-Merger", "+ KCS Pre-Merger"],
+               fontsize=7, ncol=2, loc="upper right")
 
     fig.suptitle("Freight Rail Data Overview (2017–2026)",
                  fontsize=15, fontweight="bold", y=1.01)
@@ -997,8 +1058,11 @@ def plot_fit_and_forecast(ts_train, ts_test, fits, fcast_dates, fcasts):
     fits  : {(model, target): np.ndarray in-sample fitted values (train length)}
     fcasts: {(model, target): np.ndarray hold-out forecast (test length)}
     """
-    models = ["GAM","SARIMA","OLS-FE"]
-    styles = {"GAM": ("-", 2.0), "SARIMA": ("-.", 1.7), "OLS-FE": (":", 1.7)}
+    # models = ["GAM","SARIMA","OLS-FE"]
+    # styles = {"GAM": ("-", 2.0), "SARIMA": ("-.", 1.7), "OLS-FE": (":", 1.7)}
+
+    models = ["GAM"]
+    styles = {"GAM": ("-", 2.0)}
 
     fig, axes = plt.subplots(3, 1, figsize=(20, 14), sharex=False)
     fig.suptitle("In-Sample Fit + 26-Week Hold-Out Forecast — All Targets",
@@ -1040,8 +1104,11 @@ def plot_fit_and_forecast(ts_train, ts_test, fits, fcast_dates, fcasts):
 
 def plot_forecast_comparison(ts_train, ts_test, fcasts, history_weeks=78):
     """Fig 10 – Zoomed forecast comparison with ±7% PI band."""
-    models = ["GAM","SARIMA","OLS-FE"]
-    markers = {"GAM":"o","SARIMA":"^","OLS-FE":"D"}
+    # models = ["GAM","SARIMA","OLS-FE"]
+    # markers = {"GAM":"o","SARIMA":"^","OLS-FE":"D"}
+
+    models = ["GAM"]
+    markers = {"GAM": "o"}
 
     fig, axes = plt.subplots(3, 1, figsize=(18, 13), sharex=False)
     fig.suptitle(f"{FORECAST_H}-Week Hold-Out Forecast — All Targets (±7% PI)",
@@ -1549,6 +1616,270 @@ def plot_scorecard(df_cv):
 
     plt.tight_layout()
     _save(fig, "fig19_scorecard.png")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPORT BLOCK  –  build_fitted_models()
+# ──────────────────────────────────────────────────────────────────────────────
+# Public function consumed by forecast_viz.py.  Fits all three models on the
+# full training window (no hold-out split) and returns every artefact needed
+# for downstream forecasting across all three targets.
+# ══════════════════════════════════════════════════════════════════════════════
+
+def build_fitted_models(
+    data_path: str = DATA_PATH,
+    run_cv: bool = False,
+    n_repeats: int = N_REPEATS,
+    k_folds: int = K_FOLDS,
+    seasonal_s: int = SEASONAL_S,
+    verbose: bool = True,
+) -> dict:
+    """
+    Load freight data, fit GAM / SARIMALite / FixedEffectsOLS on the **full**
+    sample for all three targets (originated, received, total), and return a
+    rich artefact dict consumed by forecast_viz.py.
+
+    Parameters
+    ----------
+    data_path  : path to the raw CSV file
+    run_cv     : if True also runs 5×2 repeated TS-CV (slow)
+    n_repeats  : CV repeats  (ignored when run_cv=False)
+    k_folds    : CV folds    (ignored when run_cv=False)
+    seasonal_s : SARIMA seasonal period in weeks (default 52)
+    verbose    : print progress messages
+
+    Returns
+    -------
+    dict
+    ────
+    "ts"                  : pd.DataFrame – aggregate weekly time-series (full)
+    "panel"               : pd.DataFrame – panel data (full, with fe_pred cols)
+    "y_all"               : dict {target: np.ndarray}  – weekly totals
+    "t_all"               : np.ndarray  – week indices (0, 1, 2, …)
+    "entity_indicators"   : dict {entity_name: (n,) array} – GAM entity weights
+
+    Per-target model objects  (keys are "<model>_model_<target>"):
+    "gam_model_originated"   / "_received" / "_total"
+    "sarima_model_originated" / "_received" / "_total"
+    "fe_model_originated"    / "_received" / "_total"
+
+    Per-target in-sample fitted arrays (keys are "y_fit_<model>_<target>"):
+    "y_fit_gam_originated"   / …
+    "y_fit_sarima_originated" / …  (placeholder = actuals; diff-space resids)
+    "y_fit_fe_originated"    / …
+
+    Convenience aliases for forecast_viz.py (which expects the v1 key names
+    for "total" target):
+    "gam_model"     → gam_model_total
+    "sarima_model"  → sarima_model_total
+    "fe_model"      → fe_model_total
+    "y_fit_gam"     → y_fit_gam_total
+    "y_fit_sarima"  → y_fit_sarima_total
+    "y_fit_fe"      → y_fit_fe_total
+
+    "df_cv"       : pd.DataFrame – CV fold metrics (None if run_cv=False)
+    "summary_cv"  : pd.DataFrame – multi-level summary   (None if run_cv=False)
+    """
+
+    # ── Step 1: Load & build data structures ─────────────────────────────────
+    if verbose:
+        print("[build_fitted_models v2] Loading data …")
+
+    raw   = load_raw_data(data_path)
+    ts    = build_aggregate_timeseries(raw)
+    panel = build_panel_data(raw)
+
+    y_all = {tgt: ts[tgt].values.astype(float) for tgt in TARGETS}
+    t_all = ts["week_num"].values.astype(float)
+
+    if verbose:
+        print(f"  Weeks in sample : {len(ts)}")
+        print(f"  Panel rows      : {len(panel):,}")
+        print(f"  Date range      : {ts['week'].min().date()} → {ts['week'].max().date()}")
+
+    # ── Step 2: Build entity indicators for GAM ───────────────────────────────
+    if verbose:
+        print("[build_fitted_models v2] Building entity indicators …")
+
+    raw_full = raw.copy()
+    raw_full["total"] = raw_full["originated"].fillna(0) + raw_full["received"].fillna(0)
+    entity_indicators = build_entity_indicators_agg(ts, raw_full)
+
+    if verbose:
+        print(f"  Entity groups : {len(entity_indicators)}")
+
+    # ── Step 3: Fit models for each target ───────────────────────────────────
+    out = {}   # accumulate all artefacts
+
+    for tgt in TARGETS:
+        y = y_all[tgt]
+
+        # ── GAM ──────────────────────────────────────────────────────────────
+        if verbose:
+            print(f"[build_fitted_models v2] Fitting GAM for target='{tgt}' …")
+
+        gam = GAMSpline(n_knots_trend=15, n_knots_entity=8,
+                        n_fourier=12, alpha=1.0)
+        gam.fit(t_all, y, ts, entity_indicators)
+        y_fit_gam = gam.predict(t_all, ts, entity_indicators)
+
+        out[f"gam_model_{tgt}"]    = gam
+        out[f"y_fit_gam_{tgt}"]    = y_fit_gam
+
+        # ── SARIMA ────────────────────────────────────────────────────────────
+        if verbose:
+            print(f"[build_fitted_models v2] Fitting SARIMALite for target='{tgt}' …")
+
+        sm = SARIMALite(p=2, q=2, P=1, Q=1, S=seasonal_s)
+        sm.fit(y)
+        out[f"sarima_model_{tgt}"] = sm
+        out[f"y_fit_sarima_{tgt}"] = y.copy()   # placeholder (diff-space resids)
+
+        # ── OLS Fixed-Effects ─────────────────────────────────────────────────
+        if verbose:
+            print(f"[build_fitted_models v2] Fitting OLS-FE for target='{tgt}' …")
+
+        fe = FixedEffectsOLS(n_fourier=6, fit_trend=True, target=tgt)
+        fe.fit(panel)
+
+        panel_copy = panel.copy()
+        panel_copy["fe_pred"] = fe.predict(panel_copy)
+        y_fit_fe = (
+            panel_copy.groupby("week")["fe_pred"]
+            .sum()
+            .reindex(ts["week"])
+            .values
+        )
+        out[f"fe_model_{tgt}"]     = fe
+        out[f"y_fit_fe_{tgt}"]     = y_fit_fe
+
+    # Panel with fe_pred for total (used by OLS-FE forecaster in forecast_viz.py)
+    panel_with_preds = panel.copy()
+    panel_with_preds["fe_pred"] = out["fe_model_total"].predict(panel_with_preds)
+
+    # ── Step 4: Optional CV ───────────────────────────────────────────────────
+    df_cv = None
+    summary_cv = None
+
+    if run_cv:
+        if verbose:
+            print("[build_fitted_models v2] Running 5×2 repeated CV …")
+
+        splits = make_time_splits(n=len(t_all), n_repeats=n_repeats,
+                                  k_folds=k_folds)
+        all_cv_records = []
+
+        for tgt in TARGETS:
+            y = y_all[tgt]
+
+            # GAM CV
+            def _gam_fit(tr, _tgt=tgt):
+                ent_tr = {k: v[tr] for k, v in entity_indicators.items()}
+                cal_tr = ts.iloc[tr].reset_index(drop=True)
+                m = GAMSpline(n_knots_trend=15, n_knots_entity=8,
+                              n_fourier=12, alpha=1.0)
+                m.fit(t_all[tr], y_all[_tgt][tr], cal_tr, ent_tr)
+                return m
+
+            def _gam_pred(m, te, _tgt=tgt):
+                ent_te = {k: v[te] for k, v in entity_indicators.items()}
+                cal_te = ts.iloc[te].reset_index(drop=True)
+                return m.predict(t_all[te], cal_te, ent_te)
+
+            recs, _ = run_cv_loop("GAM", splits, _gam_fit, _gam_pred, y, tgt,
+                                  verbose=verbose)
+            all_cv_records.extend(recs)
+
+            # SARIMA CV
+            def _sarima_fit(tr, _tgt=tgt):
+                m = SARIMALite(p=2, q=2, P=1, Q=1, S=seasonal_s)
+                m.fit(y_all[_tgt][tr])
+                return m
+
+            def _sarima_pred(m, te):
+                return m.predict(h=len(te))
+
+            recs, _ = run_cv_loop("SARIMA", splits, _sarima_fit, _sarima_pred,
+                                  y, tgt, verbose=verbose)
+            all_cv_records.extend(recs)
+
+            # OLS-FE CV
+            fe_records = []
+            week_sorted = sorted(panel["week"].unique())
+            for sp in splits:
+                fold = sp["fold"]
+                tr_weeks = [week_sorted[i] for i in sp["train_idx"]
+                            if i < len(week_sorted)]
+                te_weeks = [week_sorted[i] for i in sp["test_idx"]
+                            if i < len(week_sorted)]
+                if not tr_weeks or not te_weeks:
+                    continue
+                trp = panel[panel["week"].isin(tr_weeks)].copy()
+                tep = panel[panel["week"].isin(te_weeks)].copy()
+                try:
+                    fe_cv = FixedEffectsOLS(n_fourier=6, fit_trend=True,
+                                            target=tgt)
+                    fe_cv.fit(trp)
+                    tep = tep.copy()
+                    tep["pred"] = fe_cv.predict(tep)
+                    pred_agg = (tep.groupby("week")["pred"].sum()
+                                   .reindex(te_weeks).values)
+                    true_agg = (panel[panel["week"].isin(te_weeks)]
+                                   .groupby("week")[tgt].sum()
+                                   .reindex(te_weeks).values)
+                    pred_agg = np.clip(pred_agg, 0, None)
+                    m_r = compute_metrics(true_agg, pred_agg, "OLS-FE")
+                    m_r["fold"] = fold; m_r["target"] = tgt
+                    fe_records.append(m_r)
+                    if verbose:
+                        print(f"  [OLS-FE/{tgt}] fold {fold:2d} | "
+                              f"RMSE={m_r['RMSE']:>10,.0f} | "
+                              f"MAPE={m_r['MAPE']:.2f}%")
+                except Exception as exc:
+                    if verbose:
+                        print(f"  [OLS-FE/{tgt}] fold {fold} FAILED: {exc}")
+            all_cv_records.extend(fe_records)
+
+        df_cv = pd.DataFrame(all_cv_records)
+        summary_cv = summarise_cv(df_cv)
+
+    # ── Step 5: Package and return ────────────────────────────────────────────
+    if verbose:
+        print("[build_fitted_models v2] Done. Returning artefact dict.")
+
+    result = {
+        # Raw data
+        "ts":               ts,
+        "panel":            panel_with_preds,
+        "y_all":            y_all,           # dict {target: array}
+        "t_all":            t_all,
+        "entity_indicators": entity_indicators,
+
+        # CV results
+        "df_cv":            df_cv,
+        "summary_cv":       summary_cv,
+    }
+
+    # Per-target model objects and fitted arrays
+    for tgt in TARGETS:
+        result[f"gam_model_{tgt}"]     = out[f"gam_model_{tgt}"]
+        result[f"sarima_model_{tgt}"]  = out[f"sarima_model_{tgt}"]
+        result[f"fe_model_{tgt}"]      = out[f"fe_model_{tgt}"]
+        result[f"y_fit_gam_{tgt}"]     = out[f"y_fit_gam_{tgt}"]
+        result[f"y_fit_sarima_{tgt}"]  = out[f"y_fit_sarima_{tgt}"]
+        result[f"y_fit_fe_{tgt}"]      = out[f"y_fit_fe_{tgt}"]
+
+    # Convenience aliases expected by forecast_viz.py (v1 key names → total target)
+    result["gam_model"]      = out["gam_model_total"]
+    result["sarima_model"]   = out["sarima_model_total"]
+    result["fe_model"]       = out["fe_model_total"]
+    result["y_fit_gam"]      = out["y_fit_gam_total"]
+    result["y_fit_sarima"]   = out[f"y_fit_sarima_total"]
+    result["y_fit_fe"]       = out["y_fit_fe_total"]
+    # y_all convenience alias for total (forecast_viz uses artefacts["y_all"])
+    result["y_all_total"]    = y_all["total"]
+
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════

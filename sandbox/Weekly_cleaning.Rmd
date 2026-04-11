@@ -255,8 +255,11 @@ Weekly_Cargo_Data_2017_2026 <- weekly_cargo_data_fomatted %>% rename(Week = week
 # Export
 min_yr <- min(weekly_cargo_data$Year)
 max_yr <- max(weekly_cargo_data$Year)
-filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, ".csv", sep = "")
-write.csv(weekly_cargo_data_fomatted, file = filename)
+
+weekly_cargo_data_fomatted_clipped <- weekly_cargo_data_fomatted %>% filter(week < as.Date("2025-10-01"))
+
+filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, "_clipped.csv", sep = "")
+write.csv(weekly_cargo_data_fomatted_clipped, file = filename)
 
 filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, "_RNN.csv", sep = "")
 write.csv(Weekly_Cargo_Data_2017_2026, file = filename)

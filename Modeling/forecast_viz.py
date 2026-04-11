@@ -258,6 +258,36 @@ def resolve_forecast_dates(
 # SECTION 4 – FORECAST GENERATION
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _make_future_cal_df(ts: pd.DataFrame, fcast_dates: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    Build a minimal calendar DataFrame for the forecast horizon that mirrors
+    the columns expected by GAMSpline._build_X (week, week_of_year).
+    """
+    return pd.DataFrame({
+        "week":         list(fcast_dates),
+        "week_of_year": [d.isocalendar()[1] for d in fcast_dates],
+        "year":         [d.year for d in fcast_dates],
+    })
+
+
+def _make_future_entity_indicators(
+    artefacts: dict,
+    horizon: int,
+) -> dict:
+    """
+    Build entity indicator arrays for the forecast horizon.
+    For each entity we carry forward the last observed week's weight so that
+    the company / commodity mix is held constant across the forecast window.
+    This is the simplest admissible assumption when no panel forecast exists.
+    """
+    entity_indicators = artefacts.get("entity_indicators", {})
+    future_inds = {}
+    for name, arr in entity_indicators.items():
+        last_val = float(arr[-1])
+        future_inds[name] = np.full(horizon, last_val)
+    return future_inds
+
+
 def generate_forecasts(
     artefacts: dict,
     models: list,
@@ -266,6 +296,8 @@ def generate_forecasts(
 ) -> dict:
     """
     Call each fitted model's predict method for the requested horizon.
+    Compatible with both v1 (freight_pipeline.py) and v2 (freight_pipeline_v2.py)
+    artefact dicts.
 
     Parameters
     ----------
@@ -282,6 +314,9 @@ def generate_forecasts(
     ts    = artefacts["ts"]      # aggregate weekly time-series DataFrame
     panel = artefacts["panel"]   # panel DataFrame (company x commodity x week)
 
+    # Detect v2 pipeline (has entity_indicators)
+    is_v2 = "entity_indicators" in artefacts
+
     # Sanity check — horizon and dates must agree
     assert len(fcast_dates) == horizon, (
         f"horizon={horizon} but len(fcast_dates)={len(fcast_dates)}"
@@ -290,19 +325,22 @@ def generate_forecasts(
     forecasts = {}   # accumulate {model_name: np.ndarray}
 
     # ── GAM forecast ──────────────────────────────────────────────────────────
-    # GAMSpline.predict(t) takes a 1-D array of integer week indices.
-    # We extend the week_num sequence from the last observed index.
     if "GAM" in models:
         t_future = np.arange(
-            ts["week_num"].iloc[-1] + 1,           # first future step
-            ts["week_num"].iloc[-1] + 1 + horizon, # exclusive upper bound
+            ts["week_num"].iloc[-1] + 1,
+            ts["week_num"].iloc[-1] + 1 + horizon,
             dtype=float,
         )
-        raw = artefacts["gam_model"].predict(t_future)
-        forecasts["GAM"] = np.clip(raw, 0, None)   # carloads cannot be negative
+        if is_v2:
+            # v2 GAM requires cal_df and entity_indicators
+            cal_future = _make_future_cal_df(ts, fcast_dates)
+            ent_future = _make_future_entity_indicators(artefacts, horizon)
+            raw = artefacts["gam_model"].predict(t_future, cal_future, ent_future)
+        else:
+            raw = artefacts["gam_model"].predict(t_future)
+        forecasts["GAM"] = np.clip(raw, 0, None)
 
     # ── ProphetLite forecast ──────────────────────────────────────────────────
-    # Identical interface to GAM: predict on a t-array.
     if "Prophet" in models:
         t_future = np.arange(
             ts["week_num"].iloc[-1] + 1,
@@ -313,14 +351,11 @@ def generate_forecasts(
         forecasts["Prophet"] = np.clip(raw, 0, None)
 
     # ── SARIMALite forecast ───────────────────────────────────────────────────
-    # SARIMALite.predict(h) steps forward h periods from the end of training.
     if "SARIMA" in models:
         raw = artefacts["sarima_model"].predict(h=horizon)
         forecasts["SARIMA"] = np.clip(raw, 0, None)
 
     # ── OLS Fixed-Effects forecast ────────────────────────────────────────────
-    # Clone the last observed week's panel rows, then advance week_num and
-    # week_of_year for each step h. Sum panel-level predictions to aggregate.
     if "OLS-FE" in models:
         last_week_panel = panel[panel["week"] == panel["week"].max()].copy()
         last_week_num   = float(panel["week_num"].max())
@@ -328,15 +363,13 @@ def generate_forecasts(
         fe_preds = []
         for h in range(1, horizon + 1):
             fp_slice = last_week_panel.copy()
-            fp_slice["week_num"]     = last_week_num + h                        # advance time index
+            fp_slice["week_num"]     = last_week_num + h
             fp_slice["week_of_year"] = ((fp_slice["week_of_year"] - 1 + h) % 52) + 1
-            fp_slice["week"]         = fcast_dates[h - 1]                       # stamp with actual date
+            fp_slice["week"]         = fcast_dates[h - 1]
 
-            # Restore categorical dtypes so the FE dummy-builder works correctly
             fp_slice["company"] = fp_slice["company"].astype(panel["company"].dtype)
             fp_slice["code"]    = fp_slice["code"].astype(panel["code"].dtype)
 
-            # Sum panel-level predictions to get aggregate weekly total
             fe_preds.append(artefacts["fe_model"].predict(fp_slice).sum())
 
         forecasts["OLS-FE"] = np.clip(np.array(fe_preds), 0, None)
@@ -348,57 +381,155 @@ def generate_forecasts(
 # SECTION 5 – CSV EXPORT
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _generate_forecasts_for_target(
+    artefacts: dict,
+    models: list,
+    horizon: int,
+    fcast_dates: pd.DatetimeIndex,
+    target: str,
+) -> dict:
+    """
+    Like generate_forecasts() but operates on a specific target
+    (originated / received / total).  Used by export_forecasts_csv.
+
+    For v2 artefacts the per-target model keys are
+    "<model>_model_<target>", e.g. "gam_model_originated".
+    Falls back to the top-level convenience alias (v1 / total).
+    """
+    ts    = artefacts["ts"]
+    panel = artefacts["panel"]
+    is_v2 = "entity_indicators" in artefacts
+
+    def _get_model(prefix):
+        """Return model object, preferring the per-target key."""
+        key_tgt = f"{prefix}_model_{target}"
+        key_def = f"{prefix}_model"
+        return artefacts.get(key_tgt, artefacts.get(key_def))
+
+    forecasts = {}
+
+    if "GAM" in models:
+        gam = _get_model("gam")
+        if gam is not None:
+            t_future = np.arange(
+                ts["week_num"].iloc[-1] + 1,
+                ts["week_num"].iloc[-1] + 1 + horizon,
+                dtype=float,
+            )
+            if is_v2:
+                cal_future = _make_future_cal_df(ts, fcast_dates)
+                ent_future = _make_future_entity_indicators(artefacts, horizon)
+                raw = gam.predict(t_future, cal_future, ent_future)
+            else:
+                raw = gam.predict(t_future)
+            forecasts["GAM"] = np.clip(raw, 0, None)
+
+    if "SARIMA" in models:
+        sm = _get_model("sarima")
+        if sm is not None:
+            forecasts["SARIMA"] = np.clip(sm.predict(h=horizon), 0, None)
+
+    if "OLS-FE" in models:
+        fe = _get_model("fe")
+        if fe is not None:
+            last_week_panel = panel[panel["week"] == panel["week"].max()].copy()
+            last_week_num   = float(panel["week_num"].max())
+            fe_preds = []
+            for h in range(1, horizon + 1):
+                fp_slice = last_week_panel.copy()
+                fp_slice["week_num"]     = last_week_num + h
+                fp_slice["week_of_year"] = ((fp_slice["week_of_year"] - 1 + h) % 52) + 1
+                fp_slice["week"]         = fcast_dates[h - 1]
+                fp_slice["company"]      = fp_slice["company"].astype(panel["company"].dtype)
+                fp_slice["code"]         = fp_slice["code"].astype(panel["code"].dtype)
+                fe_preds.append(fe.predict(fp_slice).sum())
+            forecasts["OLS-FE"] = np.clip(np.array(fe_preds), 0, None)
+
+    return forecasts
+
+
 def export_forecasts_csv(
     fcast_dates: pd.DatetimeIndex,
     forecasts: dict,
     ts: pd.DataFrame,
     outdir: str,
+    artefacts: dict = None,
+    models: list = None,
+    horizon: int = None,
 ) -> str:
     """
-    Write forecast values to a tidy long-form CSV file.
+    Write forecast values to a tidy long-form CSV file covering all three
+    targets (originated, received, total) for each model.
 
     Schema
     ------
     week              : forecast date (Wednesday of each future week)
     model             : model name
+    target            : "originated" | "received" | "total"
     type              : "forecast" | "actual"
     forecast_carloads : point forecast in raw carload units
     forecast_millions : same value scaled to millions
 
-    The last 4 weeks of actuals are appended as reference rows so that
-    downstream tools can draw a seamless actual-to-forecast transition.
+    The last 4 weeks of actuals are appended as reference rows.
+    When artefacts / models / horizon are supplied the per-target model keys
+    from v2 are used; otherwise only the "total" forecasts (already computed)
+    are written.
 
     Returns
     -------
     str – full path to the saved file.
     """
     rows = []
+    all_targets = ["originated", "received", "total"]
+    is_v2 = artefacts is not None and "entity_indicators" in artefacts
 
-    # ── Forecast rows (one per date x model) ──────────────────────────────────
-    for model_name, values in forecasts.items():
-        for date, val in zip(fcast_dates, values):
+    # ── Forecast rows ─────────────────────────────────────────────────────────
+    if is_v2 and models is not None and horizon is not None:
+        # Generate forecasts for all three targets using per-target model keys
+        for tgt in all_targets:
+            tgt_forecasts = _generate_forecasts_for_target(
+                artefacts, models, horizon, fcast_dates, tgt
+            )
+            for model_name, values in tgt_forecasts.items():
+                for date, val in zip(fcast_dates, values):
+                    rows.append({
+                        "week":               date,
+                        "model":              model_name,
+                        "target":             tgt,
+                        "type":               "forecast",
+                        "forecast_carloads":  round(float(val), 2),
+                        "forecast_millions":  round(float(val) / 1e6, 6),
+                    })
+    else:
+        # Fallback: write only the "total" forecasts already in memory
+        for model_name, values in forecasts.items():
+            for date, val in zip(fcast_dates, values):
+                rows.append({
+                    "week":               date,
+                    "model":              model_name,
+                    "target":             "total",
+                    "type":               "forecast",
+                    "forecast_carloads":  round(float(val), 2),
+                    "forecast_millions":  round(float(val) / 1e6, 6),
+                })
+
+    # ── Actual reference rows (last 4 weeks, all three targets) ──────────────
+    actual_targets = [t for t in all_targets if t in ts.columns]
+    for _, row in ts.tail(4).iterrows():
+        for tgt in actual_targets:
             rows.append({
-                "week":               date,
-                "model":              model_name,
-                "type":               "forecast",
-                "forecast_carloads":  round(float(val), 2),
-                "forecast_millions":  round(float(val) / 1e6, 6),
+                "week":               row["week"],
+                "model":              "Actual",
+                "target":             tgt,
+                "type":               "actual",
+                "forecast_carloads":  round(float(row[tgt]), 2),
+                "forecast_millions":  round(float(row[tgt]) / 1e6, 6),
             })
 
-    # ── Actual reference rows (last 4 weeks) ──────────────────────────────────
-    for _, row in ts.tail(4).iterrows():
-        rows.append({
-            "week":               row["week"],
-            "model":              "Actual",
-            "type":               "actual",
-            "forecast_carloads":  round(float(row["total"]), 2),
-            "forecast_millions":  round(float(row["total"]) / 1e6, 6),
-        })
-
-    # ── Sort (chronological, then alphabetical by model) and write ─────────────
+    # ── Sort and write ────────────────────────────────────────────────────────
     df_out = (
         pd.DataFrame(rows)
-        .sort_values(["week", "model"])
+        .sort_values(["week", "target", "model"])
         .reset_index(drop=True)
     )
 
@@ -563,9 +694,16 @@ def _build_fit_forecast_figure(
 
     Returns the unsaved Figure.
     """
-    y_all = artefacts["y_all"]   # 1-D array of aggregate weekly carload totals
+    # y_all is a dict in v2 (per target), a plain array in v1
+    y_all_raw = artefacts.get("y_all", {})
+    if isinstance(y_all_raw, dict):
+        y_all = y_all_raw["total"]
+    else:
+        y_all = y_all_raw
 
-    # Map model keys to their in-sample fitted-value arrays in artefacts dict
+    # Map model keys to their in-sample fitted-value arrays.
+    # v2 uses per-target suffixed keys; v1 uses bare keys.
+    # The convenience aliases "y_fit_gam", "y_fit_fe" etc. point to "total" in v2.
     insample_key_map = {
         "GAM":     "y_fit_gam",
         "Prophet": "y_fit_prophet",
@@ -806,22 +944,35 @@ def plot_forecast_decomposition(
     decompose the full in-sample + forecast signal into Trend and Seasonality.
 
     Only drawn when at least one of {GAM, Prophet} is in *models*.
+    Compatible with both v1 and v2 GAMSpline (v2 requires cal_df + entity_indicators).
     """
-    # Decomposable models and their artefact keys
     decompose_map = {
         "GAM":     ("gam_model",     "GAM"),
         "Prophet": ("prophet_model", "Prophet"),
     }
     selected = {k: v for k, v in decompose_map.items() if k in models}
     if not selected:
-        return   # nothing to draw; skip silently
+        return
 
-    t_all = artefacts["t_all"]
+    t_all  = artefacts["t_all"]
+    is_v2  = "entity_indicators" in artefacts
 
-    # Build an extended t-array covering in-sample + forecast period
     t_future   = np.arange(t_all[-1] + 1, t_all[-1] + 1 + horizon, dtype=float)
     t_extended = np.concatenate([t_all, t_future])
     dates_ext  = list(ts["week"]) + list(fcast_dates)
+
+    # Build extended cal_df and entity_indicators for v2
+    if is_v2:
+        cal_train   = ts.reset_index(drop=True)
+        cal_future  = _make_future_cal_df(ts, fcast_dates)
+        cal_extended = pd.concat([cal_train, cal_future], ignore_index=True)
+
+        ent_train  = artefacts["entity_indicators"]
+        ent_future = _make_future_entity_indicators(artefacts, horizon)
+        ent_extended = {
+            name: np.concatenate([arr, ent_future[name]])
+            for name, arr in ent_train.items()
+        }
 
     n_models = len(selected)
     fig, axes = plt.subplots(
@@ -830,7 +981,7 @@ def plot_forecast_decomposition(
         sharex=True,
     )
     if n_models == 1:
-        axes = axes.reshape(1, 2)   # ensure 2-D indexing
+        axes = axes.reshape(1, 2)
 
     fig.suptitle(
         "Forecast Decomposition -- Trend & Seasonal Components",
@@ -840,13 +991,19 @@ def plot_forecast_decomposition(
     boundary = ts["week"].iloc[-1]
 
     for row, (mdl_key, (artefact_key, mdl_label)) in enumerate(selected.items()):
+        if artefact_key not in artefacts:
+            continue
         model = artefacts[artefact_key]
         color = PALETTE.get(mdl_label, ACCENT)
 
-        # predict_components returns (trend_array, seasonal_array) on t_extended
-        trend, seas = model.predict_components(t_extended)
+        if is_v2 and mdl_key == "GAM":
+            comps = model.predict_components(t_extended, cal_extended, ent_extended)
+            trend = comps["trend"]
+            seas  = comps["seasonality"]
+        else:
+            # v1 GAM or ProphetLite: single-argument signature
+            trend, seas = model.predict_components(t_extended)
 
-        # ── Trend sub-panel ────────────────────────────────────────────────────
         ax_t = axes[row, 0]
         ax_t.axvspan(fcast_dates[0], fcast_dates[-1], alpha=0.06, color=color)
         ax_t.axvline(boundary, color="black", linestyle=":", linewidth=1, alpha=0.4)
@@ -854,7 +1011,6 @@ def plot_forecast_decomposition(
         ax_t.set_title(f"{mdl_label} -- Trend Component")
         ax_t.set_ylabel("Carloads (millions)")
 
-        # ── Seasonal sub-panel ────────────────────────────────────────────────
         ax_s = axes[row, 1]
         ax_s.axvspan(fcast_dates[0], fcast_dates[-1], alpha=0.06, color=color)
         ax_s.axvline(boundary, color="black", linestyle=":", linewidth=1, alpha=0.4)
@@ -940,85 +1096,93 @@ def plot_gam_splines_vs_actual(
     Faceted plot: top-N weighted GAM spline basis functions, each shown
     individually overlaid against the normalised raw aggregate carload actuals.
 
-    Layout:  top_n sub-panels in a 2-column grid  +  one summary panel
-             showing the reconstructed GAM trend vs raw actuals.
-
-    Spline importance is measured by the variance of each basis's weighted
-    contribution (basis_scaled * Ridge_coef), so the most influential bases
-    appear first.
-
-    Parameters
-    ----------
-    ts          : aggregate time-series DataFrame
-    artefacts   : dict from fp.build_fitted_models()
-    fcast_dates : future dates (extend spline into the forecast region)
-    horizon     : forecast horizon (for building t_future)
-    outdir      : output directory
-    top_n       : number of top-variance spline bases to display (default 8)
-    show        : whether to call plt.show()
+    Compatible with both v1 and v2 GAMSpline artefact dicts.
+    In v2 the entity-spline columns are padded with zeros so only the global
+    trend block is visualised (consistent with v1 behaviour).
     """
-    # Guard: GAM must have been fitted
     if "gam_model" not in artefacts:
         print("  [plot_gam_splines_vs_actual] GAM model not in artefacts; skipping.")
         return
 
     gam   = artefacts["gam_model"]
     t_all = artefacts["t_all"]
-    y_all = artefacts["y_all"]
 
-    # ── Build t-arrays for in-sample and extended (in-sample + forecast) ──────
+    # y_all is a dict in v2, a plain array in v1
+    y_all_raw = artefacts.get("y_all", {})
+    if isinstance(y_all_raw, dict):
+        y_all = y_all_raw["total"]
+    else:
+        y_all = y_all_raw
+
+    is_v2 = "entity_indicators" in artefacts
+
     t_future   = np.arange(t_all[-1] + 1, t_all[-1] + 1 + horizon, dtype=float)
     t_extended = np.concatenate([t_all, t_future])
     dates_ext  = list(ts["week"]) + list(fcast_dates)
 
-    # ── Extract and weight the spline basis matrix ─────────────────────────────
-    # gam._spline_trend is a fitted sklearn SplineTransformer.
+    # ── Extract and weight the trend spline basis matrix ──────────────────────
     t2d = t_all.reshape(-1, 1)
-    B   = gam._spline_trend.transform(t2d)   # shape (n_obs, n_basis_cols)
+    B   = gam._spline_trend.transform(t2d)   # (n_obs, n_trend_cols)
 
-    # Build a full-width matrix (trend + zero Fourier padding) to use the
-    # fitted scaler, then slice out only the trend columns.
-    n_fourier_cols = gam._n_fourier_cols
-    pad            = np.zeros((len(t_all), n_fourier_cols))
-    B_full_scaled  = gam._scaler.transform(np.hstack([B, pad]))
-    B_scaled       = B_full_scaled[:, :B.shape[1]]   # trend columns only
+    if is_v2:
+        # v2: design matrix is [trend | entity_blocks | fourier | calendar]
+        # Pad with zeros for all non-trend columns so the scaler can operate
+        n_entity_cols = sum(e - s for s, e in gam._w_entity.values())
+        n_other = n_entity_cols + gam._w_fourier + 5   # 5 = calendar cols
+        pad = np.zeros((len(t_all), n_other))
+        B_full_scaled = gam._scaler.transform(np.hstack([B, pad]))
+        B_scaled = B_full_scaled[:, :B.shape[1]]
+        coef = gam._model.coef_[:B.shape[1]]
+    else:
+        # v1: design matrix is [trend | fourier | calendar]
+        n_fourier_cols = gam._n_fourier_cols
+        pad = np.zeros((len(t_all), n_fourier_cols))
+        B_full_scaled = gam._scaler.transform(np.hstack([B, pad]))
+        B_scaled = B_full_scaled[:, :B.shape[1]]
+        coef = gam._model.coef_[:B.shape[1]]
 
-    # Weighted contribution: scaled_basis * corresponding Ridge coefficient
-    coef     = gam._model.coef_[:B.shape[1]]
-    weighted = B_scaled * coef                        # shape (n_obs, n_basis_cols)
-
-    # Rank bases by variance of their weighted contribution (high = influential)
+    weighted  = B_scaled * coef
     variances = np.var(weighted, axis=0)
     top_cols  = np.argsort(variances)[::-1][:top_n]
 
     # ── Extend bases into the forecast region ─────────────────────────────────
-    t2d_ext      = t_extended.reshape(-1, 1)
-    B_ext        = gam._spline_trend.transform(t2d_ext)
-    pad_ext      = np.zeros((len(t_extended), n_fourier_cols))
+    t2d_ext = t_extended.reshape(-1, 1)
+    B_ext   = gam._spline_trend.transform(t2d_ext)
+    if is_v2:
+        pad_ext = np.zeros((len(t_extended), n_other))
+    else:
+        pad_ext = np.zeros((len(t_extended), n_fourier_cols))
     B_ext_scaled = gam._scaler.transform(np.hstack([B_ext, pad_ext]))[:, :B_ext.shape[1]]
-    weighted_ext = B_ext_scaled * coef               # extended weighted bases
+    weighted_ext = B_ext_scaled * coef
 
-    # Reconstructed GAM trend over the extended period (for summary panel)
-    trend_ext, _ = gam.predict_components(t_extended)
+    # ── Reconstructed trend from predict_components ────────────────────────────
+    if is_v2:
+        cal_train    = ts.reset_index(drop=True)
+        cal_future   = _make_future_cal_df(ts, fcast_dates)
+        cal_extended = pd.concat([cal_train, cal_future], ignore_index=True)
+        ent_train    = artefacts["entity_indicators"]
+        ent_future   = _make_future_entity_indicators(artefacts, horizon)
+        ent_extended = {
+            name: np.concatenate([arr, ent_future[name]])
+            for name, arr in ent_train.items()
+        }
+        comps     = gam.predict_components(t_extended, cal_extended, ent_extended)
+        trend_ext = comps["trend"]
+    else:
+        trend_ext, _ = gam.predict_components(t_extended)
 
-    # ── Figure layout: top_n + 1 summary panel, 2-column grid ─────────────────
-    n_facets = top_n + 1          # one per basis + one summary
+    # ── Figure layout ──────────────────────────────────────────────────────────
+    n_facets = top_n + 1
     ncols    = 2
     nrows    = (n_facets + 1) // ncols
 
-    fig, axes = plt.subplots(
-        nrows, ncols,
-        figsize=(14, 4 * nrows),
-        squeeze=False,
-    )
+    fig, axes = plt.subplots(nrows, ncols, figsize=(14, 4 * nrows), squeeze=False)
     fig.suptitle(
         f"GAM -- Top-{top_n} Weighted Spline Bases vs Actual Carloads",
         fontsize=13, fontweight="bold",
     )
     ax_flat = axes.flatten()
 
-    # Normalise actuals to [0,1] for overlay against zero-centred basis functions.
-    # This avoids y-axis scale conflicts while preserving the temporal shape.
     y_min  = y_all.min()
     y_max  = y_all.max()
     y_norm = (y_all - y_min) / (y_max - y_min + 1e-12)
@@ -1029,23 +1193,16 @@ def plot_gam_splines_vs_actual(
         ax    = ax_flat[idx]
         color = PALETTE["GAM"]
 
-        # Normalised actuals as greyed background reference
         ax.fill_between(ts["week"], y_norm, alpha=0.12, color="#999999")
         ax.plot(ts["week"], y_norm,
                 color="#999999", linewidth=0.8, alpha=0.6, label="Actual (norm.)")
-
-        # Weighted spline basis function extended through forecast period
         ax.plot(
             dates_ext, weighted_ext[:, col_idx],
             color=color, linewidth=1.6, alpha=0.9,
             label=f"Spline basis {col_idx + 1}",
         )
-
-        # Horizontal zero reference and train/forecast boundary
         ax.axhline(0, color="black", linestyle="--", linewidth=0.5, alpha=0.4)
         ax.axvline(boundary, color="black", linestyle=":", linewidth=1, alpha=0.4)
-
-        # Title shows basis index and variance (indicates relative importance)
         ax.set_title(
             f"Basis {col_idx + 1}  (var = {variances[col_idx]:.4f})",
             fontsize=9,
@@ -1053,7 +1210,7 @@ def plot_gam_splines_vs_actual(
         ax.set_xlabel("Week")
         ax.legend(fontsize=7, loc="upper left")
 
-    # ── Summary panel: reconstructed trend vs raw actuals ─────────────────────
+    # ── Summary panel ─────────────────────────────────────────────────────────
     ax_sum = ax_flat[top_n]
     ax_sum.fill_between(ts["week"], y_all / 1e6, alpha=0.12, color="#999999")
     ax_sum.plot(ts["week"], y_all / 1e6,
@@ -1069,7 +1226,6 @@ def plot_gam_splines_vs_actual(
     ax_sum.set_ylabel("Carloads (millions)")
     ax_sum.legend(fontsize=7)
 
-    # Hide any extra empty sub-panels (when n_facets is even there are none)
     for j in range(top_n + 1, len(ax_flat)):
         ax_flat[j].set_visible(False)
 
@@ -1084,58 +1240,82 @@ def plot_gam_splines_vs_actual(
 def _extract_importance(artefacts: dict, models: list) -> pd.DataFrame:
     """
     Build a tidy variable-importance DataFrame for all selected models.
+    Compatible with both v1 (freight_pipeline.py) and v2 GAMSpline attribute layouts.
 
-    Importance metric
-    -----------------
-    Ridge / OLS models: mean absolute standardised coefficient within each
-    named feature group.  SARIMA: mean absolute parameter value per component.
-
-    Feature groups
-    --------------
-    GAM         : Trend (spline), Seasonality (Fourier), Calendar effects
-    ProphetLite : Piecewise trend, Seasonality (Fourier)
-    SARIMA      : AR(p), MA(q), Seasonal AR(P), Seasonal MA(Q)
-    OLS-FE      : Company FE, Commodity FE, Fourier Seasonality, Calendar, Trend
-
-    Returns
-    -------
-    pd.DataFrame with columns: feature, importance, group, model
+    v1 GAM attributes: _n_trend_cols, _n_fourier_cols
+    v2 GAM attributes: _w_trend (int), _w_entity (dict), _w_fourier (int)
     """
     rows = []
 
     # ── GAM ───────────────────────────────────────────────────────────────────
     if "GAM" in models and "gam_model" in artefacts:
         gam  = artefacts["gam_model"]
-        coef = np.abs(gam._model.coef_)    # absolute standardised Ridge coefficients
+        coef = np.abs(gam._model.coef_)
 
-        k1 = gam._n_trend_cols             # end index of trend (spline) block
-        k2 = k1 + gam._n_fourier_cols      # end index of Fourier block
-
-        # Mean |coef| per component group captures overall group influence
-        rows += [
-            {"feature": "Trend (spline)",
-             "importance": float(coef[:k1].mean()),
-             "group": "Trend", "model": "GAM"},
-            {"feature": "Seasonality (Fourier)",
-             "importance": float(coef[k1:k2].mean()),
-             "group": "Seasonality", "model": "GAM"},
-        ]
-        # Calendar effects block (present only when a cal_df was passed to fit)
-        if len(coef) > k2:
+        # Detect v1 vs v2 by checking which attribute exists
+        if hasattr(gam, "_n_trend_cols"):
+            # v1 layout
+            k1 = gam._n_trend_cols
+            k2 = k1 + gam._n_fourier_cols
+            rows += [
+                {"feature": "Trend (spline)",
+                 "importance": float(coef[:k1].mean()),
+                 "group": "Trend", "model": "GAM"},
+                {"feature": "Seasonality (Fourier)",
+                 "importance": float(coef[k1:k2].mean()),
+                 "group": "Seasonality", "model": "GAM"},
+            ]
+            if len(coef) > k2:
+                rows.append({
+                    "feature":    "Calendar effects",
+                    "importance": float(coef[k2:].mean()),
+                    "group":      "Calendar",
+                    "model":      "GAM",
+                })
+        else:
+            # v2 layout: trend | entity_blocks | fourier | calendar
+            k_trend = gam._w_trend
             rows.append({
-                "feature":    "Calendar effects",
-                "importance": float(coef[k2:].mean()),
-                "group":      "Calendar",
+                "feature":    "Trend (spline)",
+                "importance": float(coef[:k_trend].mean()),
+                "group":      "Trend",
                 "model":      "GAM",
             })
+            # Entity blocks (company + commodity)
+            entity_coefs = []
+            for name, (s, e) in gam._w_entity.items():
+                entity_coefs.extend(coef[s:e].tolist())
+            if entity_coefs:
+                rows.append({
+                    "feature":    "Entity splines (co./comm.)",
+                    "importance": float(np.mean(entity_coefs)),
+                    "group":      "Entity",
+                    "model":      "GAM",
+                })
+            # Fourier seasonality
+            n_entity_total = sum(e - s for s, e in gam._w_entity.values())
+            s_fourier = k_trend + n_entity_total
+            e_fourier = s_fourier + gam._w_fourier
+            rows.append({
+                "feature":    "Seasonality (Fourier)",
+                "importance": float(coef[s_fourier:e_fourier].mean()),
+                "group":      "Seasonality",
+                "model":      "GAM",
+            })
+            # Calendar
+            if len(coef) > e_fourier:
+                rows.append({
+                    "feature":    "Calendar effects",
+                    "importance": float(coef[e_fourier:].mean()),
+                    "group":      "Calendar",
+                    "model":      "GAM",
+                })
 
     # ── ProphetLite ───────────────────────────────────────────────────────────
     if "Prophet" in models and "prophet_model" in artefacts:
         pm   = artefacts["prophet_model"]
-        coef = np.abs(pm.model_.coef_)    # .model_ is the Ridge estimator
-
-        k = pm._n_trend_cols              # end of piecewise-trend column block
-
+        coef = np.abs(pm.model_.coef_)
+        k = pm._n_trend_cols
         rows += [
             {"feature": "Piecewise trend",
              "importance": float(coef[:k].mean()),
@@ -1146,20 +1326,14 @@ def _extract_importance(artefacts: dict, models: list) -> pd.DataFrame:
         ]
 
     # ── SARIMALite ────────────────────────────────────────────────────────────
-    # params_ layout: [phi_1..p, theta_1..q, Phi_1..P, Theta_1..Q, log_sigma2]
-    # Use absolute parameter values as a proxy for importance.
     if "SARIMA" in models and "sarima_model" in artefacts:
         sm  = artefacts["sarima_model"]
-        par = sm.params_[:-1]             # exclude log-sigma2 at end
-
+        par = sm.params_[:-1]
         p, q, P, Q = sm.p, sm.q, sm.P, sm.Q
-
-        # Slice each component group from the parameter vector
         ar_coef  = np.abs(par[:p])
         ma_coef  = np.abs(par[p:p + q])
         sar_coef = np.abs(par[p + q:p + q + P])
         sma_coef = np.abs(par[p + q + P:p + q + P + Q])
-
         for label, arr, grp in [
             (f"AR({p})",  ar_coef,  "AR terms"),
             (f"MA({q})",  ma_coef,  "MA terms"),
@@ -1175,14 +1349,11 @@ def _extract_importance(artefacts: dict, models: list) -> pd.DataFrame:
                 })
 
     # ── OLS Fixed-Effects ──────────────────────────────────────────────────────
-    # fe_model.coef_df_ has columns: feature, coef, abs_coef.
-    # Keep top-20 by |coef|; label by interpretable category.
     if "OLS-FE" in models and "fe_model" in artefacts:
         fe  = artefacts["fe_model"]
         cdf = fe.coef_df_.nlargest(20, "abs_coef").copy()
 
         def _fe_group(feat: str) -> str:
-            """Map OLS-FE feature names to interpretable group labels."""
             if feat.startswith("company_"):                     return "Company FE"
             if feat.startswith("code_"):                        return "Commodity FE"
             if feat.startswith(("sin_", "cos_")):               return "Fourier Seasonality"
@@ -1483,8 +1654,13 @@ def main():
     if args.export:
         print("\n[5/5] Exporting forecast CSV ...")
         export_forecasts_csv(
-            fcast_dates=fcast_dates, forecasts=forecasts,
-            ts=ts, outdir=args.outdir,
+            fcast_dates=fcast_dates,
+            forecasts=forecasts,
+            ts=ts,
+            outdir=args.outdir,
+            artefacts=artefacts,
+            models=args.models,
+            horizon=horizon,
         )
     else:
         print("\n[5/5] Skipping CSV export (pass --export to enable).")
