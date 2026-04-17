@@ -1,133 +1,191 @@
-# Map Refactored
+# =========================
+# IMPORTS
+# =========================
 import pandas as pd
 import geopandas as gpd
-import networkx as nx
 import pydeck as pdk
 import panel as pn
 
-pn.extension('deckgl')
+pn.extension("deckgl")
 
-#####################################
+
+# =========================
 # CONFIG
-#####################################
-
+# =========================
 PARQUET_FILE = "Data/rails_processed.parquet"
+CORR_FILE = "Data/correlations.csv"
 
-MAJOR_CARRIERS = ['BNSF', 'CN', 'CP', 'CPKC', 'CSX', 'KCS', 'NS', 'UP']
+DEFAULT_COLOR = [180, 180, 180]
 
-COLOR_MAP = {
-    "UP": [0, 50, 154],
-    "CN": [196, 16, 32],
-    "BNSF": [0, 64, 134],
-    "CP": [196, 16, 32],
-    "CPKC": [196, 16, 32],
-    "KCS": [237, 28, 36],
-    "CSX": [0, 51, 153],
-    "NS": [0, 102, 71],
-}
 
-#####################################
+# =========================
 # DATA LOADER
-#####################################
-
+# =========================
 class RailDataLoader:
     def __init__(self, parquet_path):
         self.parquet_path = parquet_path
-        self.df = None
 
     def load(self):
-        self.df = gpd.read_parquet(self.parquet_path)
-        self._prepare()
-        return self.df
+        df = gpd.read_parquet(self.parquet_path)
 
-    def _prepare(self):
+        # -------------------------
         # Normalize owner
-        self.df["owner"] = (
-            self.df["RROWNER1"]
+        # -------------------------
+        df["owner"] = (
+            df["RROWNER1"]
             .fillna("UNKNOWN")
             .str.strip()
             .str.upper()
         )
 
-        # Add color
-        self.df["color"] = self.df["owner"].apply(
-            lambda x: COLOR_MAP.get(x, [180, 180, 180])
-        )
+        # -------------------------
+        # Convert geometry → coordinates
+        # -------------------------
+        def geom_to_coords(geom):
+            if geom is None:
+                return None
 
-        # Ensure coordinates exist
-        self.df = self.df.dropna(subset=["coordinates"])
+            try:
+                if geom.geom_type == "LineString":
+                    return [[float(x), float(y)] for x, y in geom.coords]
 
-        # 👇 IMPORTANT: ensure year exists (for slider)
-        if "year" not in self.df.columns:
-            self.df["year"] = 2020  # fallback default
+                elif geom.geom_type == "MultiLineString":
+                    coords = []
+                    for line in geom.geoms:
+                        coords.extend([[float(x), float(y)] for x, y in line.coords])
+                    return coords
+            except:
+                return None
 
-#####################################
-# GRAPH BUILDER
-#####################################
+            return None
 
-class RailGraphBuilder:
-    def __init__(self, df):
-        self.df = df
-        self.G = nx.DiGraph()
+        df["coordinates"] = df.geometry.apply(geom_to_coords)
 
-    def build(self):
-        for row in self.df.itertuples():
-            u = row.FRFRANODE
-            v = row.TOFRANODE
+        # Drop invalid rows
+        df = df.dropna(subset=["coordinates"])
 
-            self.G.add_edge(
-                u,
-                v,
-                miles=row.MILES,
-                owner=row.owner
-            )
+        # Ensure numeric miles
+        df["MILES"] = pd.to_numeric(df["MILES"], errors="coerce")
 
-        return self.G
-
-#####################################
-# VISUALIZER
-#####################################
-
-class RailVisualizer:
-    def __init__(self, df):
-        self.df = df
-
-        self.year_slider = pn.widgets.IntSlider(
-            name="Year",
-            start=int(df["year"].min()),
-            end=int(df["year"].max()),
-            value=int(df["year"].min())
-        )
-
-        self.rail_selector = pn.widgets.CheckBoxGroup(
-            name="Railroads",
-            options=sorted(df["owner"].unique()),
-            value=list(df["owner"].unique())
-        )
-
-    def filter_data(self):
-        df = self.df[
-            (self.df["year"] <= self.year_slider.value) &
-            (self.df["owner"].isin(self.rail_selector.value))
-        ]
         return df
 
+
+# =========================
+# VISUALIZER
+# =========================
+class RailVisualizer:
+    def __init__(self, df, corr_df):
+        self.df = df
+        self.corr_df = corr_df
+
+        # -------------------------
+        # Slider for animation
+        # -------------------------
+        self.week_slider = pn.widgets.IntSlider(
+            name="Week Block",
+            start=int(corr_df["week_block"].min()),
+            end=int(corr_df["week_block"].max()),
+            value=int(corr_df["week_block"].min())
+        )
+
+    # -------------------------
+    # Build correlation lookup
+    # -------------------------
+    def build_corr_lookup(self, week):
+        df = self.corr_df[self.corr_df["week_block"] == week]
+
+        corr_map = {}
+
+        for row in df.itertuples():
+            a = row.Company_A.upper()
+            b = row.Company_B.upper()
+
+            # If no numeric correlation column, simulate strength
+            val = getattr(row, "correlation", None)
+
+            # If correlation not provided, assume binary strength
+            if val is None:
+                val = 1.0
+
+            corr_map.setdefault(a, []).append((b, val))
+            corr_map.setdefault(b, []).append((a, val))
+
+        return corr_map
+
+    # -------------------------
+    # Apply correlation coloring
+    # -------------------------
+    def apply_correlation(self, df, week):
+        corr_map = self.build_corr_lookup(week)
+
+        colors = []
+        hover_pairs = []
+        hover_vals = []
+
+        for owner in df["owner"]:
+            relations = corr_map.get(owner, [])
+
+            if not relations:
+                colors.append(DEFAULT_COLOR)
+                hover_pairs.append("None")
+                hover_vals.append(0)
+                continue
+
+            # Get strongest correlation
+            partner, val = max(relations, key=lambda x: abs(x[1]))
+
+            # Color logic
+            if val > 0.5:
+                color = [0, 0, 255]      # Blue (positive)
+            elif val < -0.5:
+                color = [255, 0, 0]      # Red (negative)
+            else:
+                color = DEFAULT_COLOR
+
+            colors.append(color)
+            hover_pairs.append(partner)
+            hover_vals.append(round(val, 3))
+
+        df = df.copy()
+        df["color"] = colors
+        df["pair"] = hover_pairs
+        df["corr"] = hover_vals
+
+        return df
+
+    # -------------------------
+    # Build layer
+    # -------------------------
     def build_layer(self, df):
+        df_clean = pd.DataFrame({
+            "coordinates": df["coordinates"],
+            "color": df["color"],
+            "owner": df["owner"],
+            "pair": df["pair"],
+            "corr": df["corr"],
+            "MILES": df["MILES"]
+        }).dropna()
+
         return pdk.Layer(
             "PathLayer",
-            data=df,
+            data=df_clean,
             get_path="coordinates",
             get_color="color",
             width_min_pixels=2,
             pickable=True
         )
 
+    # -------------------------
+    # Build deck
+    # -------------------------
     def build_deck(self):
-        df = self.filter_data()
+        week = self.week_slider.value
+
+        df = self.apply_correlation(self.df, week)
 
         layer = self.build_layer(df)
 
-        deck = pdk.Deck(
+        return pdk.Deck(
             layers=[layer],
             initial_view_state=pdk.ViewState(
                 latitude=39,
@@ -135,39 +193,53 @@ class RailVisualizer:
                 zoom=3
             ),
             tooltip={
-                "html": "<b>Owner:</b> {owner}<br><b>Miles:</b> {MILES}"
+                "html": """
+                <b>Owner:</b> {owner}<br>
+                <b>Top Pair:</b> {pair}<br>
+                <b>Correlation:</b> {corr}<br>
+                <b>Miles:</b> {MILES}
+                """
             }
         )
 
-        return deck
-
+    # -------------------------
+    # Panel view (animated)
+    # -------------------------
     def view(self):
         return pn.Column(
-            "# Rail Network Explorer",
-            self.year_slider,
-            self.rail_selector,
-            pn.bind(self.build_deck)
+            "# Rail Correlation Explorer",
+            self.week_slider,
+            pn.bind(lambda w: pdk.Deck(
+                layers=[self.build_layer(self.apply_correlation(self.df, w))],
+                initial_view_state=pdk.ViewState(latitude=39, longitude=-98, zoom=3),
+                tooltip={
+                    "html": """
+                    <b>Owner:</b> {owner}<br>
+                    <b>Top Pair:</b> {pair}<br>
+                    <b>Correlation:</b> {corr}
+                    """
+                }
+            ), self.week_slider)
         )
 
-#####################################
-# APP
-#####################################
 
+# =========================
+# APP
+# =========================
 class RailApp:
     def __init__(self):
-        self.loader = RailDataLoader(PARQUET_FILE)
-        self.df = self.loader.load()
+        self.df = RailDataLoader(PARQUET_FILE).load()
+        self.corr_df = pd.read_csv(CORR_FILE)
 
-        self.graph = RailGraphBuilder(self.df).build()
-        self.visualizer = RailVisualizer(self.df)
+        self.visualizer = RailVisualizer(self.df, self.corr_df)
 
     def run(self):
         return self.visualizer.view()
 
-#####################################
-# MAIN
-#####################################
 
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     app = RailApp()
     pn.serve(app.run(), show=True)

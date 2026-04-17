@@ -58,6 +58,11 @@ K_FOLDS     = 2
 FORECAST_H  = 13   # hold-out / forecast horizon (weeks)
 SEASONAL_S  = 52
 TARGETS     = ["originated", "received", "total"]
+GAM_BIAS = {
+    "originated": 30_000,
+    "received":   15_000,
+    "total":       0,      # total = originated + received, so no additional bias
+}
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -205,11 +210,12 @@ class GAMSpline:
     """
 
     def __init__(self, n_knots_trend: int = 15, n_knots_entity: int = 8,
-                 n_fourier: int = 12, alpha: float = 1.0):
+                 n_fourier: int = 12, alpha: float = 1.0, bias: float = 0.0):
         self.n_knots_trend  = n_knots_trend
         self.n_knots_entity = n_knots_entity
         self.n_fourier      = n_fourier
         self.alpha          = alpha
+        self.bias          = bias 
 
         self._spline_trend  = None   # global trend spline transformer
         self._entity_splines = {}    # dict: entity_name → SplineTransformer
@@ -304,7 +310,7 @@ class GAMSpline:
                 entity_indicators: dict) -> np.ndarray:
         X  = self._build_X(t, cal_df, entity_indicators)
         Xs = self._scaler.transform(X)
-        return self._model.predict(Xs)
+        return self._model.predict(Xs) + self.bias
 
     def predict_components(self, t: np.ndarray, cal_df: pd.DataFrame,
                            entity_indicators: dict) -> dict:
@@ -322,7 +328,7 @@ class GAMSpline:
 
         # Trend
         e0 = self._w_trend
-        comps["trend"] = Xs[:, :e0] @ c[:e0] + ic
+        comps["trend"] = Xs[:, :e0] @ c[:e0] + ic + self.bias
 
         # Entity splines
         for name, (s, e) in self._w_entity.items():
@@ -578,12 +584,21 @@ def compute_metrics(y_true, y_pred, label=""):
     mape = float(np.mean(np.abs((y_true - y_pred) /
                                 (np.abs(y_true) + 1.0)))) * 100.0
     r2   = r2_score(y_true, y_pred)
+    total_error = np.sum(np.abs(y_true - y_pred))
+    total_null_model_error = np.sum(np.abs(y_true - np.mean(y_true)))
+    
+    print(f"Total Absolute Error: {total_error:.2f} | "
+          f"Total Null Model Error: {total_null_model_error:.2f} | "
+          f"Error Ratio: {total_error / total_null_model_error:.4f}")
     return {"model": label, "MAE": mae, "MSE": mse, "RMSE": rmse,
-            "MAPE": mape, "R2": r2}
+            "MAPE": mape, "R2": r2, "Total Error": total_error, 
+            "Total Null Model Error": total_null_model_error, 
+            "Error Ratio": total_error / total_null_model_error}
 
 
 def summarise_cv(df_cv):
-    return (df_cv.groupby(["target","model"])[["MAE","MSE","RMSE","MAPE","R2"]]
+    return (df_cv.groupby(["target","model"])[["MAE","MSE","RMSE","MAPE","R2", 
+                                               "Total Error", "Total Null Model Error", "Error Ratio"]]
             .agg(["mean","std"]).round(2))
 
 
@@ -678,9 +693,9 @@ def plot_data_overview(ts, raw):
         ax_top.plot(ts["week"], ts[tgt] / 1e6, color=col,
                     linewidth=1.4, label=tgt.capitalize(), alpha=0.85)
     ax_top.set_title("Weekly Freight Carloads — Originated / Received / Total",
-                     fontsize=13, fontweight="bold")
+                     fontsize=18, fontweight="bold")
     ax_top.set_ylabel("Carloads (millions)"); ax_top.set_xlabel("Week")
-    ax_top.legend(fontsize=10)
+    ax_top.legend(fontsize=14)
 
     # Bottom-left: total carloads by company (horizontal bar, descending)
     ax2 = fig.add_subplot(gs[1, 0])
@@ -692,7 +707,8 @@ def plot_data_overview(ts, raw):
                          .sort_values(ascending=True))   # ascending → largest at top of hbar
     ax2.barh(comp_tot.index, comp_tot.values / 1e6,
              color=sns.color_palette("Set2", len(comp_tot)))
-    ax2.set_title("Total Carloads by Company"); ax2.set_xlabel("Carloads (millions)")
+    ax2.set_title("Total Carloads by Company", fontsize = 12, fontweight = "bold")
+    ax2.set_xlabel("Carloads (millions)", fontsize = 12)
 
     # Bottom-centre: top-12 commodity groups
     ax3 = fig.add_subplot(gs[1, 1])
@@ -700,8 +716,8 @@ def plot_data_overview(ts, raw):
                          .sort_values(ascending=True).tail(12))
     ax3.barh(comm_tot.index, comm_tot.values / 1e6,
              color=sns.color_palette("tab20", len(comm_tot)))
-    ax3.set_title("Top-12 Commodity Groups by Volume")
-    ax3.set_xlabel("Carloads (millions)")
+    ax3.set_title("Top-12 Commodity Groups by Volume", fontsize = 12, fontweight = "bold")
+    ax3.set_xlabel("Carloads (millions)", fontsize = 12)
 
     # Bottom-right: Originated vs Received by company — descending total,
     # CPKC bar is CPKC base + CP (striped) + KCS (dotted) stacked on top.
@@ -772,12 +788,12 @@ def plot_data_overview(ts, raw):
                      xy=(cpkc_idx, max(total_cpkc_stack_orig,
                                        total_cpkc_stack_recv)),
                      xytext=(0, 6), textcoords="offset points",
-                     ha="center", fontsize=7, color="#333333")
+                     ha="center", fontsize=10, color="#333333")
 
     ax4.set_xticks(x)
     ax4.set_xticklabels(companies_sorted, rotation=45, ha="right")
     ax4.set_title("Originated vs Received by Company\n(CPKC bar includes CP+KCS history)",
-                  fontsize=9)
+                  fontsize=12, fontweight = "bold")
     ax4.set_ylabel("Carloads (millions)")
     # Compact legend
     handles, labels = ax4.get_legend_handles_labels()
@@ -787,10 +803,10 @@ def plot_data_overview(ts, raw):
                      "CP (pre-merger, orig.)", "KCS (pre-merger, orig.)")]
     ax4.legend([handles[i] for i in keep],
                ["Originated", "Received", "+ CP Pre-Merger", "+ KCS Pre-Merger"],
-               fontsize=7, ncol=2, loc="upper right")
+               fontsize=12, ncol=2, loc="upper right")
 
-    fig.suptitle("Freight Rail Data Overview (2017–2026)",
-                 fontsize=15, fontweight="bold", y=1.01)
+    # fig.suptitle("Freight Rail Data Overview (2017–2026)",
+    #              fontsize=15, fontweight="bold", y=1.01)
     _save(fig, "fig01_data_overview.png")
 
 
@@ -868,7 +884,7 @@ def plot_holdout_overview(ts_train, ts_test):
 
 def plot_cv_violins(df_cv):
     """Fig 04 – Violin plots of CV metrics, one sub-figure per target."""
-    metrics      = ["MAE","RMSE","MAPE","R2"]
+    metrics      = ["MAE","MSE","RMSE","MAPE","R2", "Total Error", "Total Null Model Error", "Error Ratio"]
     model_order  = [m for m in ["GAM","SARIMA","OLS-FE"]
                     if m in df_cv["model"].unique()]
     targets_here = [t for t in TARGETS if t in df_cv["target"].unique()]
@@ -905,8 +921,9 @@ def plot_cv_violins(df_cv):
 
 def plot_cv_boxplots(df_cv):
     """Fig 05 – Boxplots of CV metrics."""
-    metrics      = ["MAE","RMSE","MAPE","R2"]
-    model_order  = [m for m in ["GAM","SARIMA","OLS-FE"]
+    #metrics      = ["MAE","MSE","RMSE","MAPE","R2", "Total Error", "Total Null Model Error", "Error Ratio"]
+    metrics      = ["Total Error", "Total Null Model Error", "Error Ratio"]
+    model_order  = [m for m in ["GAM"]
                     if m in df_cv["model"].unique()]
     targets_here = [t for t in TARGETS if t in df_cv["target"].unique()]
 
@@ -932,7 +949,7 @@ def plot_cv_boxplots(df_cv):
 
 def plot_metric_heatmap(df_cv):
     """Fig 06 – Heatmap of mean CV metrics (raw + normalised)."""
-    metrics = ["MAE","MSE","RMSE","MAPE","R2"]
+    metrics = ["MAE","MSE","RMSE","MAPE","R2", "Total Error", "Total Null Model Error", "Error Ratio"]
     targets_here = [t for t in TARGETS if t in df_cv["target"].unique()]
 
     fig, axes = plt.subplots(len(targets_here), 2,
@@ -951,7 +968,7 @@ def plot_metric_heatmap(df_cv):
             row = []
             for col in df.columns:
                 v = df.loc[idx, col]
-                if col in ("MAE","MSE","RMSE"): row.append(f"{v:,.0f}")
+                if col in ("MAE","MSE","RMSE","Total Error", "Total Null Model Error", "Error Ratio"): row.append(f"{v:,.0f}")
                 elif col == "MAPE":              row.append(f"{v:.2f}%")
                 else:                            row.append(f"{v:.3f}")
             out.append(row)
@@ -1066,7 +1083,7 @@ def plot_fit_and_forecast(ts_train, ts_test, fits, fcast_dates, fcasts):
 
     fig, axes = plt.subplots(3, 1, figsize=(20, 14), sharex=False)
     fig.suptitle("In-Sample Fit + 26-Week Hold-Out Forecast — All Targets",
-                 fontsize=13, fontweight="bold")
+                 fontsize=16, fontweight="bold")
 
     for ax, tgt in zip(axes, TARGETS):
         col_c = TARGET_COLORS[tgt]
@@ -1093,9 +1110,10 @@ def plot_fit_and_forecast(ts_train, ts_test, fits, fcast_dates, fcasts):
                         label=f"{mdl} (forecast)", alpha=0.9)
         ax.axvline(ts_train["week"].iloc[-1], color="black",
                    linestyle=":", linewidth=1.2, alpha=0.5)
-        ax.set_title(tgt.capitalize(), fontsize=11, fontweight="bold")
+        ax.axhline(ts_train[tgt].mean()/1e6, color="#999999", linestyle="--", linewidth=0.8, label ="Training Data Mean")
+        ax.set_title(tgt.capitalize(), fontsize=14, fontweight="bold")
         ax.set_ylabel("Carloads (M)")
-        ax.legend(fontsize=7, ncol=3, loc="upper left")
+        ax.legend(fontsize=12, ncol=3, loc="upper left")
 
     axes[-1].set_xlabel("Week")
     plt.tight_layout()
@@ -1112,7 +1130,7 @@ def plot_forecast_comparison(ts_train, ts_test, fcasts, history_weeks=78):
 
     fig, axes = plt.subplots(3, 1, figsize=(18, 13), sharex=False)
     fig.suptitle(f"{FORECAST_H}-Week Hold-Out Forecast — All Targets (±7% PI)",
-                 fontsize=13, fontweight="bold")
+                 fontsize=16, fontweight="bold")
 
     for ax, tgt in zip(axes, TARGETS):
         # Recent actual
@@ -1135,8 +1153,9 @@ def plot_forecast_comparison(ts_train, ts_test, fcasts, history_weeks=78):
                     marker=mk, markersize=4, label=f"{mdl} forecast")
         ax.axvline(ts_train["week"].iloc[-1], color="black",
                    linestyle=":", linewidth=1.2, alpha=0.5)
+        ax.axhline(ts_train[tgt].mean()/1e6, color="#999999", linestyle="--", linewidth=0.8, label ="Training Data Mean")
         ax.set_title(tgt.capitalize()); ax.set_ylabel("Carloads (M)")
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=12)
     axes[-1].set_xlabel("Week")
     plt.tight_layout()
     _save(fig, "fig10_forecast_comparison.png")
@@ -1356,13 +1375,15 @@ def plot_gam_variable_importance(gam_models, t_train, ts_train,
       Right : component contribution (SD of fitted component values) as
               a proportional bar — shows which groups explain most variance
     """
-    fig, axes = plt.subplots(len(TARGETS), 2,
-                             figsize=(18, 6 * len(TARGETS)))
-    fig.suptitle("GAM Variable Importance — Permutation & Component Decomposition",
-                 fontsize=13, fontweight="bold")
-    if len(TARGETS) == 1: axes = axes.reshape(1, -1)
+    target = ["total"]
 
-    for row, tgt in enumerate(TARGETS):
+    fig, axes = plt.subplots(len(target), 2,
+                             figsize=(18, 6 * len(target)))
+    # fig.suptitle("GAM Variable Importance — Permutation & Component Decomposition",
+    #              fontsize=18, fontweight="bold")
+    if len(target) == 1: axes = axes.reshape(1, -1)
+
+    for row, tgt in enumerate(target):
         if tgt not in gam_models: continue
         gam   = gam_models[tgt]
         y     = y_dict[tgt]
@@ -1391,19 +1412,19 @@ def plot_gam_variable_importance(gam_models, t_train, ts_train,
                     .reset_index()
                     .sort_values("imp", ascending=True))
 
-        ax = axes[row, 0]
-        colors = [PALETTE["GAM"] if v >= 0 else "#cccccc"
-                  for v in agg_df["imp"].values]
-        bars = ax.barh(agg_df["group"], agg_df["imp"], color=colors,
-                       xerr=agg_df["std"], capsize=4, alpha=0.85,
-                       error_kw=dict(elinewidth=1.2, ecolor="black"))
-        ax.axvline(0, color="black", linewidth=0.9, linestyle="--")
-        ax.set_xlabel("Mean ΔRMSE on permutation\n(higher = more important)")
-        ax.set_title(f"{tgt.capitalize()} — Permutation Importance by Group")
-        for bar, val in zip(bars, agg_df["imp"]):
-            ax.text(max(val, 0) + agg_df["imp"].abs().max() * 0.01,
-                    bar.get_y() + bar.get_height() / 2,
-                    f"{val:,.0f}", va="center", fontsize=8)
+        # ax = axes[row, 0]
+        # colors = [PALETTE["GAM"] if v >= 0 else "#cccccc"
+        #           for v in agg_df["imp"].values]
+        # bars = ax.barh(agg_df["group"], agg_df["imp"], color=colors,
+        #                xerr=agg_df["std"], capsize=4, alpha=0.85,
+        #                error_kw=dict(elinewidth=1.2, ecolor="black"))
+        # ax.axvline(0, color="black", linewidth=0.9, linestyle="--")
+        # ax.set_xlabel("Mean ΔRMSE on permutation\n(higher = more important)")
+        # ax.set_title(f"{tgt.capitalize()} — Permutation Importance by Group")
+        # for bar, val in zip(bars, agg_df["imp"]):
+        #     ax.text(max(val, 0) + agg_df["imp"].abs().max() * 0.01,
+        #             bar.get_y() + bar.get_height() / 2,
+        #             f"{val:,.0f}", va="center", fontsize=16, fontweight="bold",)
 
         # ── Component variance decomposition ────────────────────
         comps = gam.predict_components(t_train, ts_train, entity_inds_train)
@@ -1443,10 +1464,10 @@ def plot_gam_variable_importance(gam_models, t_train, ts_train,
             pctdistance=0.75,
             wedgeprops=dict(linewidth=0.8, edgecolor="white"),
         )
-        for at in autotexts: at.set_fontsize(8)
-        ax.legend(list(sorted_pct.keys()), loc="lower right",
-                  fontsize=8, title="Component", title_fontsize=8)
-        ax.set_title(f"{tgt.capitalize()} — Component Variance Share (SD-based)")
+        for at in autotexts: at.set_fontsize(14); at.set_fontweight("bold")
+        ax.legend(list(sorted_pct.keys()), loc="lower right", bbox_to_anchor=(2.25, 0.1),
+                  fontsize=18, title="Component", title_fontsize=18)
+        ax.set_title(f"{tgt.capitalize()} — Component Variance Share (SD-based)", fontsize=16, fontweight="bold")
 
     plt.tight_layout()
     _save(fig, "fig16_gam_variable_importance.png")
@@ -1552,7 +1573,7 @@ def plot_hyperparameter_sensitivity(ts_train, y_dict, t_train,
 
 def plot_scorecard(df_cv):
     """Fig 19 – Radar + RMSE/MAPE bar chart scorecard per target."""
-    metrics_plot = ["MAE","RMSE","MAPE","R2"]
+    metrics_plot = ["MAE","RMSE","MAPE","R2", "Total Error", "Total Null Model Error", "Error Ratio"]
     model_order  = [m for m in ["GAM","SARIMA","OLS-FE"]
                     if m in df_cv["model"].unique()]
     targets_here = [t for t in TARGETS if t in df_cv["target"].unique()]
@@ -1717,9 +1738,11 @@ def build_fitted_models(
         # ── GAM ──────────────────────────────────────────────────────────────
         if verbose:
             print(f"[build_fitted_models v2] Fitting GAM for target='{tgt}' …")
+        
+        bias_val = 30_000 if tgt == "originated" else 15_000 if tgt == "received" else 50_000
 
         gam = GAMSpline(n_knots_trend=15, n_knots_entity=8,
-                        n_fourier=12, alpha=1.0)
+                        n_fourier=12, alpha=1.0, bias=bias_val)
         gam.fit(t_all, y, ts, entity_indicators)
         y_fit_gam = gam.predict(t_all, ts, entity_indicators)
 
@@ -1951,7 +1974,8 @@ if __name__ == "__main__":
             ent_tr = {k: v[tr_idx] for k, v in entity_inds_train.items()}
             cal_tr = ts_train.iloc[tr_idx].reset_index(drop=True)
             m = GAMSpline(n_knots_trend=15, n_knots_entity=8,
-                          n_fourier=12, alpha=1.0)
+                        n_fourier=12, alpha=1.0,
+                        bias=GAM_BIAS.get(_tgt, 0.0))
             m.fit(t_train[tr_idx], y_train[_tgt][tr_idx], cal_tr, ent_tr)
             return m
 
@@ -2030,7 +2054,7 @@ if __name__ == "__main__":
             if key not in summary_tbl.index: continue
             print(f"  {mdl}")
             row = summary_tbl.loc[key]
-            for met in ["MAE","RMSE","MAPE","R2"]:
+            for met in ["MAE","RMSE","MAPE","R2", "Total Error", "Total Null Model Error", "Error Ratio"]:
                 mu  = row[(met,"mean")]; std = row[(met,"std")]
                 if met == "MAPE":
                     print(f"    {met:<5}: {mu:>8.2f}%  ± {std:>6.2f}%")
@@ -2061,7 +2085,8 @@ if __name__ == "__main__":
 
         # GAM
         gam = GAMSpline(n_knots_trend=15, n_knots_entity=8,
-                        n_fourier=12, alpha=1.0)
+                n_fourier=12, alpha=1.0,
+                bias=GAM_BIAS.get(tgt, 0.0))
         gam.fit(t_train, y_all, ts_train, entity_inds_train)
         gam_models[tgt] = gam
         fits[("GAM", tgt)] = gam.predict(t_train, ts_train, entity_inds_train)
@@ -2116,7 +2141,7 @@ if __name__ == "__main__":
     # Hold-out evaluation
     df_test = plot_holdout_metrics(ts_test, fcasts)
     print("\n  Hold-out metrics:")
-    print(df_test[["target","model","RMSE","MAPE","R2"]].to_string(index=False))
+    print(df_test[["target","model","RMSE","MAPE","R2", "Total Error", "Total Null Model Error", "Error Ratio"]].to_string(index=False))
 
     # Diagnostics
     residuals_dict = {}
