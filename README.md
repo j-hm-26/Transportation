@@ -218,8 +218,9 @@ In addition to the primary GAM + RNN framework, `freight_pipeline.py` implements
 | **OLS Fixed-Effects** | `FixedEffectsOLS` | Two-way FE (company + commodity) on log-carloads + Fourier + calendar |
 
 **Validation:** 5×2 repeated time-series cross-validation with randomized jitter on split points (preserving temporal order, no data leakage). Produces 10 non-overlapping train/test folds per model.
+   
+**Forecasting:** 26-week (6-month) ahead forecasts are generated for all four models after final full-sample fitting. The first 13 of these weeks are used in the hierarchical model.
 
-**Forecasting:** 26-week (6-month) ahead forecasts are generated for all four models after final full-sample fitting.
 ---
 
 ### Model Validation
