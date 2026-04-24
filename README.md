@@ -177,9 +177,9 @@ The market share allocation problem involves predicting **352 time series simult
 | Hyperparameter | Search Range |
 |---|---|
 | Lookback (weeks) | varied |
-| Hidden layer size | 128 – 512 nodes |
+| Hidden layer size | 64 – 1024 nodes |
 | Learning rate | varied |
-| Dropout | 0.0 – 0.3 |
+| Dropout | 0.0 – 0.4 |
 | Number of layers | 1 – 3 |
 
 The top 40 configurations were re-trained with **5-seed cross-validation**. The final selected model uses:
@@ -204,7 +204,7 @@ This hierarchical structure ensures that disaggregate (company-commodity) foreca
 
 ---
 
-### Extended Benchmark Pipeline (`freight_pipeline.py`)
+#### Extended Benchmark Pipeline (`freight_pipeline.py`) - Not Used For Final Evaluation
 
 In addition to the primary GAM + RNN framework, `freight_pipeline.py` implements a **four-model benchmark suite** for aggregate volume forecasting with a complete cross-validation and visualization framework. This is suitable for rapid experimentation and comparison.
 
@@ -222,7 +222,7 @@ In addition to the primary GAM + RNN framework, `freight_pipeline.py` implements
 **Forecasting:** 26-week (6-month) ahead forecasts are generated for all four models after final full-sample fitting.
 ---
 
-## Model Validation
+### Model Validation
 
 All models are evaluated using **5×2 repeated time-series cross-validation** — a forward-chaining scheme where training always precedes testing in time to prevent lookahead bias.
 
@@ -239,7 +239,7 @@ CV results are saved to `Visuals/freight_pipeline/2017_onwards/cv_results.csv` a
 
 ---
 
-## Results
+## Results: 13 Week Forecast
 
 ### GAM vs. Naive Benchmark (Volume Forecasting)
 
