@@ -1,0 +1,270 @@
+---
+title: "Weekly Cargo Cleaning"
+author: "Sakina Lord"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("~/Desktop/478C_Capstone/CAPPY/Data"))
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(stringr)
+library(purrr)
+```
+
+# Options
+```{r}
+VERBOSE <- FALSE
+```
+
+
+# load data
+```{r}
+# Grab all weekly fies from directory
+files <- list.files(path = "./Rail_Service_Data/", pattern = "\\.xlsx$")
+files <- files[!grepl("Chicago|EP724|CTCO|ctco|UP|up", files)]
+skipped_files <- list()
+# initialize an empty file for them all to read into
+weekly_cargo_data <- tibble()
+
+for  (i in 1:length(files)){
+  filename = paste("./Rail_Service_Data/" , files[i], sep = '')
+  if(VERBOSE){  
+    print(i)
+    print(filename)}
+  
+  if(str_detect(filename, "%")){
+      company <- str_extract(filename, "[A-Z]{2,}")
+  
+        week <- str_extract(filename, "\\d{4}_\\d{2}_\\d{2}") %>%
+          str_replace_all("_", "-") %>% as.Date("%Y-%m-%d")
+        
+        year <- as.numeric(format(week, "%Y"))
+        if(VERBOSE){
+        print.Date(week, format = "%Y-%m-%d")
+        print(paste(c("reading", week, company), sep = " "))}
+  
+        if (company == "CN" && (week != as.Date("2025-09-03", format = "%Y-%m-%d"))) {
+          range <- "B9:E31"}
+        else{
+          if(company == "NS" && (week == as.Date("2021-06-30")))
+            {
+            range <- "B14:E36"
+            }
+          else {range <- "B8:E30"}
+        }
+          
+      # Read based on file range
+          temp <- read_xlsx(filename,
+                          sheet = 5,
+                          range = range)
+          
+        if(VERBOSE){print(head(temp))}
+  
+        temp <- temp %>% mutate(Year = year,
+                                Week = week,
+                                Company = company)
+        weekly_cargo_data <- rbind(temp, weekly_cargo_data)
+  }
+  else {
+    if(VERBOSE){print("File not of correct format, appending to unread list")}
+    skipped_files <- append(skipped_files, filename)
+    }
+}
+
+```
+
+UP has a different file format, so rbind a bit differently
+```{r, message=FALSE}
+# Grab all file names with UP
+UP_files <- list.files(path = "./Rail_Service_Data/", pattern = "^UP%20Data%.*\\.xlsx$")
+
+range <- "B7:D31"
+
+`Commodity Group Code` <- c("T","A", "B", "C",
+  "U", "D", "E", "F",
+  "H", "G", "I", "J",
+  "K", "L", "M", "N",
+  "O", "P", "Q", "R", 
+  "TOTAL CARLOADS", "V", 
+  "S", "TOTAL INTERMODAL")
+
+for (i in 1:length(UP_files)){
+  filename = paste("./Rail_Service_Data/" , UP_files[i], sep = '')
+  if(VERBOSE){
+    print(filename)
+    print(i)
+  }
+  if(str_detect(filename, "%")){
+      company <- "UP"
+
+      week <- str_extract(filename, "\\d{4}_\\d{2}_\\d{2}") %>%
+        str_replace_all("_", "-") %>% as.Date("%Y-%m-%d")
+      
+      year <- as.numeric(format(week, "%Y"))
+      
+      if(VERBOSE){
+        print.Date(week, format = "%Y-%m-%d")
+        print(paste(c("reading", week, company), sep = " "))}
+      
+      temp <- read_xlsx(filename,
+                              sheet = 6,
+                              range = range)
+      if(!('Cars Originated' %in% names(temp))){
+        # Re-read in temp
+        temp <- read_xlsx(filename,
+                              sheet = 5,
+                              range = "B8:E30")
+      }
+      else{
+        temp <- temp %>% 
+        rename(Originated = `Cars Originated`,
+               Received = `Cars Interchanged`,
+               `Commodity Group` = Commodity) %>%
+        cbind(`Commodity Group Code`) %>% select(`Commodity Group`, `Commodity Group Code`, everything())
+      }
+      temp <- temp %>% mutate(Year = year,
+               Week = week,
+               Company = company)
+      if (VERBOSE)
+        {print(head(temp))}
+      weekly_cargo_data <- rbind(temp, weekly_cargo_data)
+  }
+  else {print("File not of correct format")
+    skipped_files <- append(skipped_files, filename)}
+}
+
+```
+
+# add years before 2020
+```{r}
+#skipped_files <- as.list(skipped_files)
+missed_files <- list()
+min_date <- as.Date("2017-03-22", format = "%Y-%m-%d")
+
+weekly_cargo_data_temp <- tibble()
+
+for (i in 1:length(skipped_files)){
+  filename = unlist(skipped_files[i])
+  if(VERBOSE){
+    print(filename)
+    print(i)
+  }
+    company <- str_to_upper(str_extract(filename, "\\/[a-z]{2,}"))
+    company <- str_extract(company, "[A-Z]{2,}")
+
+    week <- str_extract(filename, "\\d{4}_\\d{2}_\\d{2}") %>%
+      str_replace_all("_", "-") %>% as.Date("%Y-%m-%d")
+    
+    year <- as.numeric(format(week, "%Y"))
+  if(week > min_date){
+    if(company %in% c("CP", "BNSF", "KCS", "NS", "CSX")){
+      sheet = 5
+      range = "B8:E30"
+    }
+    else if(company == "CN"){
+      sheet = 5
+      range = "B9:E31"
+
+    }
+    else{print("range not found")}
+    
+    if(VERBOSE){
+      print.Date(week, format = "%Y-%m-%d")
+      print(paste(c("reading", week, company), sep = " "))}
+    
+    temp <- read_xlsx(filename,
+                            sheet = sheet,
+                            range = range)
+    # Special check for UP
+    if(company == "UP"){
+      temp <- read_xlsx(filename,
+                              sheet = 6,
+                              range = range)
+      
+      if(!('Cars Originated' %in% names(temp))){
+        # Re-read in temp
+        temp <- read_xlsx(filename,
+                              sheet = 5,
+                              range = "B8:E30")
+      }
+      else{
+        temp <- temp %>% 
+        rename(Originated = `Cars Originated`,
+               Received = `Cars Interchanged`,
+               `Commodity Group` = Commodity) %>%
+        cbind(`Commodity Group Code`) %>% select(`Commodity Group`, `Commodity Group Code`, everything())
+      }
+    }
+    temp <- temp %>% mutate(Year = year,
+             Week = week,
+             Company = company)
+    if (VERBOSE)
+      {print(head(temp))}
+    weekly_cargo_data <- rbind(temp, weekly_cargo_data)
+  }
+  else{if(VERBOSE){print("Data too old")
+        print(week)}}
+}
+
+```
+
+# cleaning
+```{r}
+cargo_groups <- read.csv("commodity_groups.csv")
+
+weekly_cargo_data_fomatted <- weekly_cargo_data %>% janitor::clean_names() %>%
+     filter(!(grepl("TOTAL",commodity_group_code))) %>%
+  mutate(originated = as.numeric(originated),
+         received = as.numeric(received),
+         `originated-recieved` = originated - received,
+         Total_Originated_Recieved = originated + received,
+         commodity_group = tolower(commodity_group),
+         week = as.Date(week, format="%Y-%m-%d"),
+         company = as.factor(company)) %>%
+  left_join(cargo_groups,
+            join_by(commodity_group == Original_Name),
+            relationship = "many-to-one") %>%
+  mutate(commodity_group = as.factor(Standard_Name),
+         commodity_group_code = as.factor(commodity_group_code)) %>%
+  select (-Code, -Standard_Name) %>%
+     select(week, year, company, commodity_group, commodity_group_code, originated, received, `originated-recieved`, Total_Originated_Recieved) %>%
+   janitor::clean_names() %>% 
+  group_by(week, year, company, commodity_group, commodity_group_code) %>%
+  slice(1)
+
+
+total_carloads_prediciton_data <- weekly_cargo_data_fomatted %>%   
+  group_by(year, week, company, commodity_group_code) %>%
+  summarise(Total_Carloads = sum(originated + received, na.rm = TRUE), .groups = "drop") %>%
+  janitor::clean_names()
+
+```
+```{r}
+# rename for RNN
+Weekly_Cargo_Data_2017_2026 <- weekly_cargo_data_fomatted %>% rename(Week = week, 'Commodity Group' = commodity_group,
+                                                                      'Commodity Group Code' = commodity_group_code, 
+                                                                      Originated = originated, Received = received,
+                                                                      Company = company, Year = year)
+```
+
+
+```{r}
+# Export
+min_yr <- min(weekly_cargo_data$Year)
+max_yr <- max(weekly_cargo_data$Year)
+
+weekly_cargo_data_fomatted_clipped <- weekly_cargo_data_fomatted %>% filter(week < as.Date("2025-10-01"))
+
+filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, "_clipped.csv", sep = "")
+write.csv(weekly_cargo_data_fomatted_clipped, file = filename)
+
+filename <- paste("Weekly_Cargo_Data_", min_yr,"_", max_yr, "_RNN.csv", sep = "")
+write.csv(Weekly_Cargo_Data_2017_2026, file = filename)
+
+filename <- paste("Carload_Prediction_Weekly_Cargo_Data_", min_yr,"_", max_yr, ".csv", sep = "")
+write.csv(total_carloads_prediciton_data, file = filename)
+
+```

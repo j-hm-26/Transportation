@@ -1,0 +1,219 @@
+---
+title: "TS of Weekly Cargo Data"
+author: "Sakina Lord"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("~/Desktop/478C_Capstone/CAPPY/Data"))
+library(arrow)
+library(tidyverse)
+library(corrplot)
+library(cowplot)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+ library(zoo)
+```
+
+Load Data
+```{r load data}
+load("weekly_cargo_data.RData") 
+
+cargo <- cargo %>% select(-X, -Year) %>% 
+  filter(Company != "UP") %>% replace(is.na(.), 0) %>%
+  group_by(Company) %>%
+  mutate(
+    Total_Originated_Recieved_norm = (Total_Originated_Recieved - min(Total_Originated_Recieved, na.rm = TRUE)) /
+                                     (max(Total_Originated_Recieved, na.rm = TRUE) - min(Total_Originated_Recieved, na.rm = TRUE))
+  ) %>%
+  ungroup()
+#write.csv(cargo, file = "~/Desktop/478C_Capstone/CAPPY/Data/normalized_weekly_cargo_all_years_no_UP.csv")
+  
+head(cargo)
+```
+
+```{r}
+plot.ts(cargo)
+```
+
+```{r}
+ggplot(cargo, aes(x = Week, y = Total_Originated_Recieved)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y")
+```
+```{r}
+
+# Source - https://stackoverflow.com/a/4862334
+# Posted by Matti Pastell, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-03-18, License - CC BY-SA 4.0
+#ma <- function(x, n = 5){filter(x, rep(1 / n, n), sides = 2)
+
+ma <- function(x, n = 5){stats::filter(x, rep(1 / n, n), sides = 2)}
+
+# 4 week averages, starting with Chemicals
+chem_cargo <- cargo %>% filter(Commodity_Code == "A") 
+
+ggplot(chem_cargo, aes(x = Week)) +
+  geom_line(aes(y = Total_Originated_Recieved, color = Company))
+
+```
+
+```{r}
+cargo_1diff <- cargo %>%
+  arrange(Company, Commodity_Group, Commodity_Code, Week) %>%
+  group_by(Company, Commodity_Group, Commodity_Code) %>%
+  mutate(
+    Originated             = Originated              - lag(Originated,              1),
+    Received               = Received                - lag(Received,                1),
+    `Originated-Recieved`  = `Originated-Recieved`   - lag(`Originated-Recieved`,   1),
+    Total_Originated_Recieved = Total_Originated_Recieved - lag(Total_Originated_Recieved, 1)
+  ) %>%
+  ungroup()
+
+cargo_4diff <- cargo %>%
+  arrange(Company, Commodity_Group, Commodity_Code, Week) %>%
+  group_by(Company, Commodity_Group, Commodity_Code) %>%
+  mutate(
+    Originated             = Originated              - lag(Originated,              4),
+    Received               = Received                - lag(Received,                4),
+    `Originated-Recieved`  = `Originated-Recieved`   - lag(`Originated-Recieved`,   4),
+    Total_Originated_Recieved = Total_Originated_Recieved - lag(Total_Originated_Recieved, 4)
+  ) %>%
+  ungroup()
+
+cargo_12diff <- cargo %>%
+  arrange(Company, Commodity_Group, Commodity_Code, Week) %>%
+  group_by(Company, Commodity_Group, Commodity_Code) %>%
+  mutate(
+    Originated             = Originated              - lag(Originated,              12),
+    Received               = Received                - lag(Received,                12),
+    `Originated-Recieved`  = `Originated-Recieved`   - lag(`Originated-Recieved`,   12),
+    Total_Originated_Recieved = Total_Originated_Recieved - lag(Total_Originated_Recieved, 12)
+  ) %>%
+  ungroup()
+```
+
+
+```{r}
+ggplot(cargo_4diff, aes(x = Week, y = Total_Originated_Recieved_norm)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y") +
+  labs(title = "lag 4")
+```
+```{r}
+ggplot(cargo_1diff, aes(x = Week, y = Total_Originated_Recieved)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y") +
+  labs(title = "lag 1")
+
+```
+
+```{r}
+ggplot(cargo_12diff, aes(x = Week, y = Total_Originated_Recieved)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y") +
+  labs(title = "lag 12")
+
+```
+# monthly grouped
+
+```{r}
+row_idxs <- seq(1,nrow(cargo), 4)
+
+cargo_monthly <- cargo %>%
+   mutate(Month = format(Week, "%m/%Y"),
+         week_num = pmin(as.numeric(strftime(Week, format = "%V")), 52)) %>%
+  mutate(week_block = paste0("W", ceiling(as.numeric(week_num) / 4) * 4 - 3, "-", ceiling(as.numeric(week_num) / 4) * 4),
+         quarter = paste0("Q", ceiling(as.numeric(week_num) / 13)))
+
+cargo_monthly[sample(nrow(cargo_monthly), 5),]
+```
+
+```{r}
+cargo_monthly_chem <- cargo_monthly %>% filter(Commodity_Code == "A")
+cargo_monthly_coal <- cargo_monthly %>% filter(Commodity_Code == "B")
+cargo_monthly_coke <- cargo_monthly %>% filter(Commodity_Code == "C")
+cargo_monthly_crushstone <- cargo_monthly %>% filter(Commodity_Code == "D")
+cargo_monthly_farmprods <- cargo_monthly %>% filter(Commodity_Code == "E")
+cargo_monthly_food <- cargo_monthly %>% filter(Commodity_Code == "F")
+cargo_monthly_grainmill <- cargo_monthly %>% filter(Commodity_Code == "G")
+cargo_monthly_grain <- cargo_monthly %>% filter(Commodity_Code == "H")
+
+ggplot((cargo_monthly %>% filter(Commodity_Group != "Containers")), aes(y = Total_Originated_Recieved_norm, fill = Company)) +
+  geom_boxplot(position = position_dodge2(preserve = "single")) +
+  facet_grid(quarter ~ Commodity_Group, scales = "free_y") +
+  theme(legend.position = "bottom")
+
+```
+
+
+
+```{r}
+ggplot(cargo_monthly, aes(x = factor(week_block), y = Total_Originated_Recieved, fill = Company)) +
+  geom_boxplot(outlier.size = 0.8, position = position_dodge2(preserve = "single")) +
+  facet_wrap(~ Commodity_Group, scales = "free_y", ncol = 2) +
+  scale_x_discrete(breaks = as.character(seq(1, 52, by = 4))) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Total Originated & Received by Week Number and Company",
+    x = "Week Number",
+    y = "Total Originated & Received",
+    fill = "Company"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x  = element_text(angle = 45, hjust = 1, size = 7),
+    strip.text   = element_text(face = "bold", size = 9),
+    legend.position = "bottom"
+  )
+```
+```{r}
+ggplot((cargo_monthly %>% filter(Commodity_Group %in% c("Grain", "Coal"))), aes(y = Total_Originated_Recieved_norm, fill = Company)) +
+  geom_boxplot(position = position_dodge2(preserve = "single")) +
+  facet_grid(quarter ~ Commodity_Group, scales = "free_y") +
+  theme(legend.position = "bottom")
+```
+
+# Add in Rolling Means, week values, YoY changes
+```{r}
+cargo_monthly <- cargo %>%
+  mutate(
+    Month = format(Week, "%m/%Y"),
+    week_num = pmin(as.numeric(strftime(Week, format = "%V")), 52)
+  ) %>%
+  mutate(
+    week_block = paste0("W", ceiling(as.numeric(week_num) / 4) * 4 - 3, "-", ceiling(as.numeric(week_num) / 4) * 4),
+    quarter = paste0("Q", ceiling(as.numeric(week_num) / 13))
+  ) %>%
+  arrange(Company, Commodity_Code, Week) %>%
+  group_by(Company, Commodity_Code) %>%
+  mutate(
+    across(
+      where(is.numeric),
+      list(
+        rolling_4w  = ~ rollmean(.x, k = 4,  fill = NA, align = "right"),
+        rolling_12w = ~ rollmean(.x, k = 12, fill = NA, align = "right"),
+        YoY = ~ (. - lag(., 52)) / abs(lag(., 52)) * 100
+      )
+    )
+  ) %>%
+  ungroup() %>%
+  select(-week_num_rolling_4w, -week_num_rolling_12w, -week_num_YoY)
+
+```
+
+```{r}
+ggplot(cargo_monthly, aes(x = Week, y = Total_Originated_Recieved_norm_rolling_4w)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y") +
+  labs(title = "4 Week Rolling avg")
+```
+```{r}
+ggplot(cargo_monthly, aes(x = Week, y = Total_Originated_Recieved_norm_rolling_12w)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y") +
+  labs(title = "12 Week Rolling avg")
+```
+
+```{r}
+ggplot(cargo_monthly, aes(x = Week, y = Total_Originated_Recieved_norm_YoY)) +
+  geom_line(aes(color = Company)) + facet_wrap(~Commodity_Group,scales = "free_y") +
+  labs(title = "Year on Year delta")
+```
+

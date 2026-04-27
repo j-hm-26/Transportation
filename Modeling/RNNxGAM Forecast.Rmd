@@ -1,0 +1,64 @@
+---
+title: "RNNxGAM Forecast"
+author: "Sakina Lord"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+```
+
+
+```{r}
+gam <-read.csv("/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/GAM_predictions.csv") %>% mutate(week = as.Date(week)) %>% janitor::clean_names()
+actual <- read.csv("/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/Actuals.csv") %>% mutate(week = as.Date(week))%>% janitor::clean_names()
+rnn <-read.csv("/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/RNN_predicted_proportions.csv") %>% rename(week = Week) %>% mutate(week = as.Date(week)-4)%>% janitor::clean_names()
+```
+
+```{r}
+rnn_wide <- rnn %>% mutate(
+    week = as.Date(week)) %>%
+  pivot_wider(
+    names_from = c(type),
+    values_from = proportion,
+    values_fill = 0
+  ) %>% rename(origin_proportion = Originated,
+               received_proportion = Received) %>% 
+  janitor::clean_names()
+```
+
+```{r}
+gam <- gam %>% mutate(originated = originated + 30000,
+                      recieved = received + 15000)
+write.csv(gam, "/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/GAM_predictions_scaled.csv")
+```
+
+
+
+```{r}
+preds <- left_join(rnn_wide, gam, by = "week") %>% mutate(pred_total = (received_proportion + received_proportion) * total,
+                                                     pred_originated = origin_proportion * originated,
+                                                     pred_received = received_proportion * received) %>%
+  mutate(diff = pred_total - (pred_originated + pred_received)) %>% select(-x, -originated, -received, -total, -diff)
+
+write.csv(preds, "/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/RNNxGAM_predictions_scaled.csv")
+```
+
+```{r}
+ act_join <- left_join(preds, actual, by = c("week", "company", "commodity"="commodity_group_code")) %>%
+   select(-x_1, -x)
+
+write.csv(preds, "/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/RNNxGAM_predictions_with_actuals_scaled.csv")
+```
+
+```{r}
+average_vol <- actual %>% select(-x_1, -x) %>% group_by(company, commodity_group_code) %>%
+  summarize(originated = mean(originated),
+            received = mean(received), .groups = "drop")
+
+write.csv(average_vol, "/home/lord/Desktop/478C_Capstone/CAPPY/Data/Final Sets/average_volume.csv")
+```
+
+
